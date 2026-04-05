@@ -1,0 +1,8 @@
+# torch is provided by the base image (pytorch/pytorch:2.0.0-cuda11.7)
+transformers==4.45.2
+scipy==1.10.1
+numpy==1.24.4
+tqdm==4.66.5
+scikit-learn
+psycopg2-binary       # PostgreSQL connection
+sqlalchemy            # DB ORM

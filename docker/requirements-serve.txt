@@ -1,0 +1,9 @@
+# torch is provided by the base image (pytorch/pytorch:2.0.0-cuda11.7)
+transformers==4.45.2
+numpy==1.24.4
+fastapi
+uvicorn[standard]
+psycopg2-binary       # PostgreSQL connection
+sqlalchemy            # DB ORM
+pgvector              # pgvector Python client
+scipy                 # required by training.utils (sparse matrix)

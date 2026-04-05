@@ -1,0 +1,119 @@
+services:
+
+  # ── Database ──────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: mlops_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mlops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mlops}
+      POSTGRES_DB: ${POSTGRES_DB:-mlops}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - mlops_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mlops}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Serving (Blue) ────────────────────────────────────────
+  # Blue-Green deployment: 平時只跑 serve_blue
+  # 更新時啟動 serve_green，確認正常後切流量，再關 serve_blue
+  serve_blue:
+    build:
+      context: .
+      dockerfile: docker/serve.Dockerfile
+    container_name: mlops_serve_blue
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mlops}:${POSTGRES_PASSWORD:-mlops}@postgres:5432/${POSTGRES_DB:-mlops}
+      MODEL_PATH: /models/best_model.pt
+      MODEL_ARGS_PATH: /models/model_args.pkl
+    volumes:
+      - ./models:/models
+    ports:
+      - "8000:8000"
+    networks:
+      - mlops_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  serve_green:
+    build:
+      context: .
+      dockerfile: docker/serve.Dockerfile
+    container_name: mlops_serve_green
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mlops}:${POSTGRES_PASSWORD:-mlops}@postgres:5432/${POSTGRES_DB:-mlops}
+      MODEL_PATH: /models/best_model.pt
+      MODEL_ARGS_PATH: /models/model_args.pkl
+    volumes:
+      - ./models:/models
+    ports:
+      - "8001:8000"                   # 不同 port，測試確認後再切
+    networks:
+      - mlops_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - green                         # 預設不啟動，用 --profile green 才跑
+
+  # ── Training ──────────────────────────────────────────────
+  # 不常駐，由 Airflow 排程觸發（或手動 docker compose run train）
+  train:
+    build:
+      context: .
+      dockerfile: docker/train.Dockerfile
+    container_name: mlops_train
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mlops}:${POSTGRES_PASSWORD:-mlops}@postgres:5432/${POSTGRES_DB:-mlops}
+      MODEL_OUTPUT_PATH: /models/best_model.pt
+      MODEL_PATH: /models/best_model.pt
+      MODEL_ARGS_PATH: /models/model_args.pkl
+    volumes:
+      - ${MLOPS_PROJECT_DIR}/models:/models  # 用絕對路徑避免 Docker socket 路徑解析問題
+    networks:
+      - mlops_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - train                         # 預設不啟動，避免佔用資源
+
+  # ── Airflow ───────────────────────────────────────────────
+  airflow:
+    build:
+      context: .
+      dockerfile: docker/airflow.Dockerfile
+    container_name: mlops_airflow
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-mlops}:${POSTGRES_PASSWORD:-mlops}@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      MLOPS_PROJECT_DIR: ${MLOPS_PROJECT_DIR}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - .:/opt/airflow/project                     # 讓 Airflow 能執行 docker compose
+      - ./models:/models                           # 讓 Airflow 能 backup model 檔案
+      - /var/run/docker.sock:/var/run/docker.sock  # 讓 Airflow 能控制 Docker
+    ports:
+      - "8080:8080"
+    networks:
+      - mlops_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: standalone
+
+volumes:
+  postgres_data:
+
+networks:
+  mlops_net:
+    driver: bridge
