@@ -410,15 +410,40 @@ serving/main.py # 只掛 GET /explain endpoint
 
 不需要相似度計算，`/feedback` 資料本身已排除直接搜尋行為。
 
-### 8.3 Dashboard Drill Down 維度
-| 維度 | 說明 |
-|------|------|
-| 整體比例 | 命中率概覽 |
-| by category | 哪些類別命中率高/低（JOIN `item`） |
-| by brand | 哪些品牌命中率高/低（JOIN `item`） |
-| by user 活躍度 | 5–10 次 / 10–20 次 / > 20 次互動 |
+### 8.3 Dashboard Provisioning
+**決策：** 使用 Grafana provisioning（YAML + JSON）而非手動 UI 設定。
 
-### 8.4 新增 Table Schema
+**原因：**
+- Container 重建後自動恢復，不需要重新設定
+- Infrastructure as code，版本控制友好
+
+**檔案結構：**
+```
+grafana/provisioning/
+  datasources/postgres.yaml      # PostgreSQL datasource
+  dashboards/provider.yaml       # dashboard 載入設定
+  dashboards/recommendation_analytics.json  # dashboard 定義
+```
+
+### 8.4 Dashboard Panels
+| Panel | 類型 | 說明 |
+|-------|------|------|
+| Overall Hit Rate | gauge | 全域命中率，色階 red/yellow/green |
+| Total Feedback / Hits / Misses | stat | 累計數字 |
+| Hit Rate by Category | bargauge | 各子類別命中率（horizontal，含 ⓘ 說明） |
+| Hit Rate by Brand | bargauge | 各品牌命中率（horizontal，含 ⓘ 說明） |
+| Hit Rate by User Activity Level | bargauge | 1–10 / 11–20 / >20 互動次數分組，含 ⓘ 說明 |
+| Feedback Events Over Time | timeseries | hits / misses 趨勢，GROUP BY hour |
+
+### 8.5 Category Bug Fix
+**問題：** `ingest_beauty.py` 原本取 `cats[0]`（第一個非零 category = 頂層 "Beauty"），導致 12,101 個商品的 `category_id1` 全是 "Beauty"，Grafana category drill-down 無意義。
+
+**修法：**
+- `ingest_beauty.py` 改為 `cats[-1]`（最後一個非零 = 最具體子類別），與 `data_generator.py` 邏輯對齊
+- 新增 `scripts/migrate_item_categories.py`，一次性更新現有 DB 資料（不需重跑 ingestion）
+- 執行後 category 分佈正常（Lotions 725 / Nail Polish 712 / Shampoos 494 / ...）
+
+### 8.6 新增 Table Schema
 ```sql
 recommendation_feedback_log(id, user_id, item_id, timestamp, hit)
 ```

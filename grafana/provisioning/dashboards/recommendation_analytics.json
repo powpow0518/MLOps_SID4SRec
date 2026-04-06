@@ -1,0 +1,246 @@
+{
+  "title": "Recommendation Analytics",
+  "uid": "mlops-rec-analytics",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "1m",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Overall Hit Rate",
+      "type": "gauge",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 5 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "green", "value": 0.2 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT NOW() AS time, SUM(CASE WHEN hit THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0) AS value FROM recommendation_feedback_log",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Total Feedback",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 5 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT NOW() AS time, COUNT(*) AS value FROM recommendation_feedback_log",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Hits",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "fixedColor": "green", "mode": "fixed" }
+        }
+      },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT NOW() AS time, COUNT(*) AS value FROM recommendation_feedback_log WHERE hit = true",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Misses",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "fixedColor": "red", "mode": "fixed" }
+        }
+      },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT NOW() AS time, COUNT(*) AS value FROM recommendation_feedback_log WHERE hit = false",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Hit Rate by Category",
+      "description": "各類別的推薦命中率。\n\n命中（Hit）= 使用者透過 /feedback 互動的商品，出現在該使用者最近一次推薦清單中。\n未命中（Miss）= 使用者互動的商品不在推薦清單中。\n\n0% = 該類別的所有 feedback 商品均未被推薦過。\n100% = 該類別的所有 feedback 商品都曾被推薦。",
+      "type": "bargauge",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 9 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "green", "value": 0.2 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT c.category AS metric, SUM(CASE WHEN f.hit THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0) AS \"Hit Rate\" FROM recommendation_feedback_log f JOIN item i ON f.item_id = i.item_id JOIN category c ON i.category_id1 = c.category_id GROUP BY c.category ORDER BY \"Hit Rate\" DESC LIMIT 15",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": { "valueLabel": "metric" }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Hit Rate by Brand",
+      "description": "各品牌的推薦命中率。\n\n命中（Hit）= 使用者透過 /feedback 互動的商品，出現在該使用者最近一次推薦清單中。\n未命中（Miss）= 使用者互動的商品不在推薦清單中。\n\n0% = 該品牌的所有 feedback 商品均未被推薦過。\n100% = 該品牌的所有 feedback 商品都曾被推薦。",
+      "type": "bargauge",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 9 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "green", "value": 0.2 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT COALESCE(b.brand_name, 'Unknown') AS metric, SUM(CASE WHEN f.hit THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0) AS \"Hit Rate\" FROM recommendation_feedback_log f JOIN item i ON f.item_id = i.item_id LEFT JOIN brand b ON i.brand_id = b.brand_id GROUP BY b.brand_name ORDER BY \"Hit Rate\" DESC LIMIT 15",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": { "valueLabel": "metric" }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Hit Rate by User Activity Level",
+      "description": "依使用者互動次數分組的推薦命中率。\n\n1–10 次 = 輕度用戶\n11–20 次 = 中度用戶\n>20 次 = 重度用戶\n\n互動次數越多的用戶，系統對其偏好掌握越充分，命中率通常越高。",
+      "type": "bargauge",
+      "gridPos": { "x": 0, "y": 14, "w": 8, "h": 8 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "green", "value": 0.2 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT CASE WHEN interaction_count BETWEEN 1 AND 10 THEN '1–10' WHEN interaction_count BETWEEN 11 AND 20 THEN '11–20' ELSE '>20' END AS metric, SUM(CASE WHEN f.hit THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0) AS \"Hit Rate\" FROM recommendation_feedback_log f JOIN (SELECT user_id, COUNT(*) AS interaction_count FROM interaction GROUP BY user_id) u ON f.user_id = u.user_id GROUP BY metric ORDER BY metric",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": { "valueLabel": "metric" }
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Feedback Events Over Time",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 14, "w": 16, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "datasource": "PostgreSQL",
+          "rawSql": "SELECT DATE_TRUNC('hour', timestamp) AS time, SUM(CASE WHEN hit THEN 1 ELSE 0 END) AS hits, SUM(CASE WHEN NOT hit THEN 1 ELSE 0 END) AS misses FROM recommendation_feedback_log GROUP BY 1 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

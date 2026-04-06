@@ -78,6 +78,6 @@ For the following topics, **never output a full solution or design directly**. I
 - Model: SID4SRec（SASRec + Diffusion + Contrastive Learning）
 - Database: PostgreSQL 16 + pgvector（HNSW index，192-dim embeddings）
 - RAG: Two-step Google Gemini API（structured → summary），整合進 FastAPI
-- Analytics: Grafana（port 3000，直連 PostgreSQL）
+- Analytics: Grafana（port 3000，直連 PostgreSQL，provisioning 自動載入 dashboard）
 - **Infrastructure: Docker / Docker Compose（所有服務皆以容器化方式運行）**
 - Recommend top-k: 20（HR@5=0.0774，HR@20=0.1533）

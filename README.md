@@ -71,6 +71,7 @@ This system serves personalized item recommendations using **SID4SRec** — a SA
 ├── data_pipeline/    # Data ingestion utilities
 ├── scripts/          # One-off scripts (ingest, generate embeddings, generate user representations, ...)
 ├── docker/           # Dockerfiles + requirements per service
+├── grafana/          # Grafana provisioning (datasource + dashboard JSON)
 ├── models/           # Model weights (not committed)
 ├── data/             # Raw and processed data (not committed)
 ├── docker-compose.yml
@@ -152,7 +153,7 @@ This is an active learning project. Current progress:
 - [x] Airflow DAG skeleton
 - [x] User representation pipeline (inference-time UPSERT + post-retrain batch)
 - [x] RAG-based explanation system (`/explain`, Google Gemini API)
-- [ ] Grafana analytics dashboard (recommendation accuracy, drill-down by category/brand/user activity)
+- [x] Grafana analytics dashboard (recommendation accuracy, drill-down by category/brand/user activity, provisioning)
 - [ ] Full end-to-end pipeline validation
 
 ---
@@ -226,6 +227,7 @@ This is an active learning project. Current progress:
 ├── data_pipeline/    # 資料注入工具
 ├── scripts/          # 一次性腳本（資料注入、產生 embedding、產生 user representation 等）
 ├── docker/           # 各服務的 Dockerfile 與 requirements
+├── grafana/          # Grafana provisioning（datasource + dashboard JSON）
 ├── models/           # 模型權重（不納入版本控制）
 ├── data/             # 原始與處理後資料（不納入版本控制）
 ├── docker-compose.yml
@@ -307,5 +309,5 @@ docker compose --profile train run --no-deps --rm train python -m training.train
 - [x] Airflow DAG 骨架
 - [x] User Representation Pipeline（推論時 UPSERT + 重訓後 batch 更新）
 - [x] RAG-based 推薦解釋系統（`/explain`，Google Gemini API）
-- [ ] Grafana 分析儀表板（推薦準確率，依 category / brand / 用戶活躍度 drill-down）
+- [x] Grafana 分析儀表板（推薦準確率，依 category / brand / 用戶活躍度 drill-down，provisioning 自動載入）
 - [ ] 完整端到端 Pipeline 驗證

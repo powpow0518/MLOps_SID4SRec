@@ -82,6 +82,7 @@ services:
       MODEL_ARGS_PATH: /models/model_args.pkl
     volumes:
       - ${MLOPS_PROJECT_DIR}/models:/models  # 用絕對路徑避免 Docker socket 路徑解析問題
+      - ${MLOPS_PROJECT_DIR}/data:/app/data  # 供需要讀原始資料的腳本使用
     networks:
       - mlops_net
     depends_on:
@@ -121,8 +122,10 @@ services:
     container_name: mlops_grafana
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_USER: admin
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
     ports:
       - "3000:3000"
     networks:

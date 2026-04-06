@@ -66,10 +66,11 @@ def ingest(dat):
     for item_id in range(1, len(feats)):   # 0 = padding, skip
         row = feats[item_id]
         price = float(row[0]) if row[0] > 0 else None
-        # take first 2 non-zero category IDs
+        # take most specific category IDs (last non-zero = most specific, second-last = parent)
+        # aligns with data_generator.py which also uses the last non-zero category
         cats = [int(c) for c in row[1:-1] if c > 0]
-        cat1 = cats[0] if len(cats) > 0 else None
-        cat2 = cats[1] if len(cats) > 1 else None
+        cat1 = cats[-1] if len(cats) > 0 else None
+        cat2 = cats[-2] if len(cats) > 1 else None
         brand = int(row[-1]) if row[-1] > 0 else None
         item_rows.append((item_id, cat1, cat2, brand, price))
 
