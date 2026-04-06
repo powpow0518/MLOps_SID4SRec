@@ -70,11 +70,14 @@ For the following topics, **never output a full solution or design directly**. I
 
 ---
 
-## Tech Stack (to be populated as decided)
+## Tech Stack
 
 - Language: Python
-- Serving: FastAPI
-- Orchestration: Apache Airflow
-- Models: SASRec, diffusion-based recommendation
-- Retrieval: RAG pipeline (details TBD)
-- **Infrastructure: Docker（所有服務皆以容器化方式運行）**
+- Serving: FastAPI（port 8000，Blue-Green deployment）
+- Orchestration: Apache Airflow（port 8080）
+- Model: SID4SRec（SASRec + Diffusion + Contrastive Learning）
+- Database: PostgreSQL 16 + pgvector（HNSW index，192-dim embeddings）
+- RAG: Two-step Google Gemini API（structured → summary），整合進 FastAPI
+- Analytics: Grafana（port 3000，直連 PostgreSQL）
+- **Infrastructure: Docker / Docker Compose（所有服務皆以容器化方式運行）**
+- Recommend top-k: 20（HR@5=0.0774，HR@20=0.1533）

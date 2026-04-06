@@ -92,12 +92,15 @@ Model（items_emb()：item + category + brand embedding 串接）
 - Diffusion 增強 + 2 層對比學習提升表現
 - 已有訓練好的權重，可直接部署
 
-### 2.2 User representation 不存 DB
-**決策：** User embedding 在 inference 時從 item sequence 動態計算，不存入 DB。
+### 2.2 User representation 雙軌更新策略
+**決策：** User representation 存入 DB（`user_representation` table），採雙軌更新：
+1. 每次 `GET /recommend` 推論後 UPSERT
+2. Retrain 後由 `manual_retrain` DAG 的 `generate_user_representations` task batch 更新所有 user
 
 **原因：**
-- SASRec 的 user representation 依賴 item sequence，不是靜態向量
-- 存 DB 沒有意義，每次 sequence 更新都要重算
+- RAG `/explain` 需要 user representation 做相似 user 搜尋，必須存 DB
+- Batch 更新（~2s，22K users）確保 retrain 後所有 user 的 representation 對齊新 model
+- 推論時 UPSERT 確保活躍 user 的 representation 即時更新
 
 ### 2.3 Retrain 策略
 - **Hyperparameter search 與 retrain 分開**：retrain 使用已知好參數，不重新搜尋
@@ -157,19 +160,44 @@ Model（items_emb()：item + category + brand embedding 串接）
 ### 4.0 推薦參數
 | 參數 | 值 |
 |------|-----|
-| recommend top-k | 5 |
+| recommend top-k | 20 |
 
-### 4.1 GET vs POST /recommend 分離
-**決策：**
-- `GET /recommend`：從 DB 查歷史 interaction，適合一般首頁推薦
-- `POST /recommend`：直接接收 item sequence，適合新互動後立即推薦
+**原因：** 模型 HR@5 = 0.0774，HR@20 = 0.1533。top-20 命中率是 top-5 的兩倍，對推薦品質有顯著改善。
 
-**原因：** 兩種使用情境不同，分開設計讓 client 有彈性選擇。
+### 4.1 移除 POST /recommend，改為 POST /user
+
+**決策：** 原本的 `POST /recommend`（直接傳 item_sequence 推薦）已移除，改為 `POST /user`。
+
+**原因：**
+- `POST /recommend` 傳入的 item_sequence 不會寫進 DB，導致下次 `GET /recommend` 查無歷史（404）
+- 實際需求是「新用戶 onboarding」，應先建立 DB 紀錄再推薦，而非繞過 DB
+- 系統所有互動資料都在 DB，`GET /recommend` 可以完整處理所有推薦情境
+
+**POST /user 設計：**
+- Input：`item_sequence: List[int]`（不傳 user_id，由 DB 自動產生）
+- 驗證每個 item_id 存在於 `item` table，否則 404
+- `user_id` 用 `SELECT MAX(user_id) + 1` 自動產生（接在現有最大值之後）
+- 寫入 `user` + `interaction` table
+- 回傳新 `user_id`（22364 為第一個新 user）
 
 ### 4.2 Model 在 startup 時載入
 **決策：** FastAPI lifespan 啟動時 load model 一次，常駐記憶體。
 
 **原因：** 每次 request 重新 load model 延遲太高（數秒），serving 需要低延遲。
+
+### 4.2 新增 POST /item
+
+**決策：** 新增 `POST /item` endpoint，允許建立新商品。
+
+**設計：**
+- Input：`category1: str`、`category2: str（optional）`、`brand: str`、`price: float`
+- category / brand 用名稱查詢，不存在則自動建立（UPSERT 邏輯）
+- `item_id` 用 `SELECT MAX(item_id) + 1` 自動產生
+- 回傳新 `item_id`
+
+**原因：** 新用戶 onboarding 時若要帶入系統外的商品，需要先有辦法建立 item，再建立 user。
+
+---
 
 ### 4.3 feedback vs interaction 分離
 **決策：**
@@ -283,28 +311,37 @@ user_representation(user_id, model_version, representation vector(192), created_
 
 **初次嘗試 Gemma-4-31b-it（已棄用）：** 一開始用 `models/gemma-4-31b-it`，但測試發現它會把整個推理過程（Draft 1、Self-Correction、Final Polish 等）全部吐出來，prompt 加再多「不要 think out loud」的指令也壓不下來。Gemma 是 open model 風格，本來就不適合需要乾淨輸出的 production endpoint。換成 Gemini 2.5 Flash 後直接吐出單段純文字，無需後處理。
 
-### 7.3 一般用戶 RAG 流程
+### 7.3 一般用戶 RAG 流程（兩階段 LLM）
 ```
 輸入：user_id
   ↓
-查詢 user_representation + recommendation_log（最新 5 個 item）
+查詢 user_representation + recommendation_log（最新 top-20 item）
   ↓
 向量搜尋：找 cosine similarity ≥ 0.5 的前 3 個相似 user
   ↓
 取得相似 user 的 item sequence + item 屬性（category, brand）+ recommend_list
   ↓
-LLM Prompt：
-  - System：面向一般人，解釋為何推薦這些商品
-  - User：user A 互動歷史、推薦的 5 個 item、相似 user B/C/D 的資料
-  - 請從品牌、類別、相似用戶行為三個角度找出解釋
+【第一次 Gemini call】結構化 prompt：
+  - 針對每個推薦 item 寫一句話原因
+  - 輸出：逐條結構化文字
   ↓
-輸出（一段自然語言，涵蓋全部推薦 item）：
+【第二次 Gemini call】摘要 prompt：
+  - 把結構化輸出送回 Gemini，產生重點摘要
+  ↓
+回傳：
 {
   "user_id": 123,
-  "explanation": "...",
-  "source": "llm" | "fallback"
+  "summary": "一段重點摘要",
+  "source": "llm" | "fallback",
+  "recommended_items": [...20 個 item 含屬性],
+  "user_context": {最近10次互動, top3 categories, top3 brands}
 }
 ```
+
+**兩階段設計原因：**
+- top-20 商品直接要 LLM 一段涵蓋品質差（字數爆炸或遺漏）
+- 結構化先確保每個 item 有解釋，摘要再整合核心規律
+- client 只需要 `summary`，結構化作為中間步驟不回傳
 
 ### 7.4 Context 範圍（每個 user）
 **決策：** 每個 user（目標 + 相似）的 prompt context 包含：
@@ -318,11 +355,11 @@ LLM Prompt：
 - Prompt size 固定，不會隨 user 歷史長度暴增
 
 ### 7.5 新用戶處理（cold start）
-**決策：** `/explain` 查不到 `user_representation` 直接回 404，訊息「請先呼叫 POST /recommend」。
+**決策：** `/explain` 查不到 `user_representation` 直接回 404，訊息「請先呼叫 POST /user 或 GET /recommend」。
 
 **原因：**
 - SASRec 本質：沒互動就沒 representation
-- 新用戶應透過 `POST /recommend`（帶 item_sequence）或 `/feedback` 建立歷史
+- 新用戶應透過 `POST /user`（帶 item_sequence 建立帳號）或 `GET /recommend` 建立歷史
 - 不在 `/explain` 內做 fallback inference，避免額外延遲與職責混淆
 
 ### 7.6 LLM 失敗處理

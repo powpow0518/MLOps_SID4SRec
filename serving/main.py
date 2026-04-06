@@ -3,9 +3,11 @@ import pickle
 import torch
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
@@ -74,13 +76,162 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(lifespan=lifespan)
+_LANG_CONTENT = {
+    "en": {
+        "title": "MLOps SID4SRec API",
+        "tags": {
+            "recommendation":  "Recommendation endpoints",
+            "interaction":     "Interaction recording",
+            "RAG_explanation": "RAG-based recommendation explanation",
+            "user_management": "User and item management",
+            "system":          "System health",
+        },
+        "endpoints": {
+            ("GET",  "/health"):      ("Health Check",            ""),
+            ("GET",  "/user_list"):   ("List Users",              "Return all user IDs in the database."),
+            ("GET",  "/recommend"):   ("Recommend (from DB)",     "Fetch interaction history from DB, then run inference."),
+            ("POST", "/feedback"):    ("Record Feedback",         "Record a recommendation-driven interaction and check if it was a hit."),
+            ("POST", "/interaction"): ("Record Interaction",      "Record an organic interaction (user found item independently)."),
+            ("GET",  "/explain"):     ("Explain Recommendations", "RAG-based explanation of why these items were recommended.\n\nFlow: user_representation → similar users (cosine ≥ 0.5, top 3) → LLM → natural language explanation."),
+            ("POST", "/user"):        ("Create User",             "Register a new user with their initial item sequence. Validates all item IDs exist, auto-generates user_id."),
+            ("POST", "/item"):        ("Create Item",             "Create a new item. Category and brand are looked up by name and created if they don't exist."),
+        },
+    },
+    "zh": {
+        "title": "MLOps SID4SRec API",
+        "tags": {
+            "recommendation":  "推薦端點",
+            "interaction":     "互動紀錄",
+            "RAG_explanation": "RAG 推薦解釋",
+            "user_management": "用戶與商品管理",
+            "system":          "系統健康",
+        },
+        "endpoints": {
+            ("GET",  "/health"):      ("健康檢查",       ""),
+            ("GET",  "/user_list"):   ("列出所有用戶",   "回傳資料庫中所有 user ID。"),
+            ("GET",  "/recommend"):   ("推薦（從 DB）",  "從 DB 查詢歷史互動紀錄，執行推薦推論。"),
+            ("POST", "/feedback"):    ("記錄回饋",       "記錄推薦驅動的互動，並判斷是否命中推薦清單。"),
+            ("POST", "/interaction"): ("記錄自然互動",   "記錄使用者自行搜尋購買的互動（非推薦來源）。"),
+            ("GET",  "/explain"):     ("解釋推薦原因",   "RAG 自然語言解釋為什麼系統推薦這些商品。\n\n流程：user_representation → 相似用戶（cosine ≥ 0.5，top 3）→ LLM → 自然語言解釋。"),
+            ("POST", "/user"):        ("建立新用戶",     "建立新用戶並寫入初始 item sequence。驗證所有 item ID 存在，user_id 由 DB 自動產生。"),
+            ("POST", "/item"):        ("建立新商品",     "建立新商品。category 與 brand 以名稱查詢，不存在則自動建立。"),
+        },
+    },
+}
+
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url=None,
+    openapi_url=None,
+)
+
+
+def _build_openapi(lang: str = "en") -> dict:
+    content = _LANG_CONTENT[lang]
+    schema = get_openapi(
+        title=content["title"],
+        version="1.0.0",
+        routes=app.routes,
+    )
+    schema["tags"] = [
+        {"name": name, "description": desc}
+        for name, desc in content["tags"].items()
+    ]
+    for path, methods in schema.get("paths", {}).items():
+        for method, operation in methods.items():
+            key = (method.upper(), path)
+            if key in content["endpoints"]:
+                summary, description = content["endpoints"][key]
+                operation["summary"] = summary
+                operation.pop("description", None)
+                if description:
+                    operation["description"] = description
+    return schema
+
+
+@app.get("/openapi.json", include_in_schema=False)
+def openapi_en():
+    return JSONResponse(_build_openapi("en"))
+
+
+@app.get("/openapi-zh.json", include_in_schema=False)
+def openapi_zh():
+    return JSONResponse(_build_openapi("zh"))
+
+
+@app.get("/docs", include_in_schema=False)
+def custom_docs():
+    html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MLOps SID4SRec API</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+    <style>
+        #lang-btn {
+            position: fixed;
+            top: 12px;
+            right: 20px;
+            z-index: 9999;
+            background: #49cc90;
+            color: white;
+            border: none;
+            padding: 8px 18px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }
+        #lang-btn:hover { background: #3bab74; }
+    </style>
+</head>
+<body>
+<button id="lang-btn" onclick="switchLang()">切換至中文</button>
+<div id="swagger-ui"></div>
+<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+<script>
+    let currentLang = 'en';
+
+    function initUI(url) {
+        SwaggerUIBundle({
+            url: url,
+            dom_id: '#swagger-ui',
+            presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+            layout: 'StandaloneLayout',
+            deepLinking: true,
+        });
+    }
+
+    function switchLang() {
+        currentLang = currentLang === 'en' ? 'zh' : 'en';
+        const url = currentLang === 'en' ? '/openapi.json' : '/openapi-zh.json';
+        document.getElementById('lang-btn').textContent =
+            currentLang === 'en' ? '切換至中文' : 'Switch to English';
+        initUI(url);
+    }
+
+    window.onload = () => initUI('/openapi.json');
+</script>
+</body>
+</html>
+"""
+    return HTMLResponse(html)
 
 
 # ── Request schemas ───────────────────────────────────────────────────────────
-class RecommendRequest(BaseModel):
-    user_id: int
+class CreateUserRequest(BaseModel):
     item_sequence: List[int]
+
+
+class CreateItemRequest(BaseModel):
+    category1: str
+    category2: Optional[str] = None
+    brand: str
+    price: float
 
 
 class FeedbackRequest(BaseModel):
@@ -103,7 +254,7 @@ def get_db():
 
 
 # ── Inference helper ──────────────────────────────────────────────────────────
-def _run_inference(item_sequence: List[int], top_k: int = 10):
+def _run_inference(item_sequence: List[int], top_k: int = 20):
     """Run inference and return (top_k item ids, user representation as list).
 
     The user representation is the transformer's last-position output (dim=192),
@@ -153,19 +304,19 @@ def _save_recommendation_log(db: Session, user_id: int, items: List[int]):
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
-@app.get("/health")
+@app.get("/health", tags=["system"])
 def health():
     return {"status": "ok"}
 
 
-@app.get("/user_list")
+@app.get("/user_list", tags=["recommendation"])
 def user_list(db: Session = Depends(get_db)):
     rows = db.execute(text('SELECT user_id FROM "user" ORDER BY user_id')).fetchall()
     return {"users": [r[0] for r in rows]}
 
 
-@app.get("/recommend")
-def recommend_from_db(user_id: int, top_k: int = 10, db: Session = Depends(get_db)):
+@app.get("/recommend", tags=["recommendation"])
+def recommend_from_db(user_id: int, top_k: int = 20, db: Session = Depends(get_db)):
     """Fetch interaction history from DB, then run inference."""
     rows = db.execute(
         text("SELECT item_id FROM interaction WHERE user_id = :uid ORDER BY timestamp ASC"),
@@ -182,17 +333,103 @@ def recommend_from_db(user_id: int, top_k: int = 10, db: Session = Depends(get_d
     return {"user_id": user_id, "recommendations": recommended}
 
 
-@app.post("/recommend")
-def recommend_from_sequence(req: RecommendRequest, top_k: int = 10, db: Session = Depends(get_db)):
-    """Accept item sequence directly, run inference without querying DB."""
-    recommended, user_repr = _run_inference(req.item_sequence, top_k=top_k)
-    _save_recommendation_log(db, req.user_id, recommended)
-    _upsert_user_representation(db, req.user_id, user_repr)
+@app.post("/user", tags=["user_management"], status_code=201)
+def create_user(req: CreateUserRequest, db: Session = Depends(get_db)):
+    """Register a new user with their initial item sequence.
+
+    Validates all item_ids exist, auto-generates user_id, writes interactions to DB.
+    """
+    # Validate all items exist
+    for item_id in req.item_sequence:
+        exists = db.execute(
+            text("SELECT 1 FROM item WHERE item_id = :iid"),
+            {"iid": item_id},
+        ).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail=f"Item {item_id} does not exist")
+
+    # Auto-generate user_id
+    row = db.execute(text('SELECT COALESCE(MAX(user_id), 0) + 1 FROM "user"')).fetchone()
+    new_user_id = row[0]
+
+    db.execute(text('INSERT INTO "user" (user_id) VALUES (:uid)'), {"uid": new_user_id})
+
+    now = datetime.now(timezone.utc)
+    for item_id in req.item_sequence:
+        db.execute(
+            text("INSERT INTO interaction (user_id, item_id, timestamp) VALUES (:uid, :iid, :ts)"),
+            {"uid": new_user_id, "iid": item_id, "ts": now},
+        )
+
     db.commit()
-    return {"user_id": req.user_id, "recommendations": recommended}
+    return {"user_id": new_user_id}
 
 
-@app.post("/feedback")
+@app.post("/item", tags=["user_management"], status_code=201)
+def create_item(req: CreateItemRequest, db: Session = Depends(get_db)):
+    """Create a new item with category, brand, and price.
+
+    Category and brand are looked up by name; created if they don't exist.
+    """
+    # Upsert category1
+    row = db.execute(
+        text("SELECT category_id FROM category WHERE category = :name"),
+        {"name": req.category1},
+    ).fetchone()
+    if row:
+        category_id1 = row[0]
+    else:
+        r = db.execute(
+            text("INSERT INTO category (category_id, category) VALUES ((SELECT COALESCE(MAX(category_id),0)+1 FROM category), :name) RETURNING category_id"),
+            {"name": req.category1},
+        ).fetchone()
+        category_id1 = r[0]
+
+    # Upsert category2 (optional)
+    category_id2 = None
+    if req.category2:
+        row = db.execute(
+            text("SELECT category_id FROM category WHERE category = :name"),
+            {"name": req.category2},
+        ).fetchone()
+        if row:
+            category_id2 = row[0]
+        else:
+            r = db.execute(
+                text("INSERT INTO category (category_id, category) VALUES ((SELECT COALESCE(MAX(category_id),0)+1 FROM category), :name) RETURNING category_id"),
+                {"name": req.category2},
+            ).fetchone()
+            category_id2 = r[0]
+
+    # Upsert brand
+    row = db.execute(
+        text("SELECT brand_id FROM brand WHERE brand_name = :name"),
+        {"name": req.brand},
+    ).fetchone()
+    if row:
+        brand_id = row[0]
+    else:
+        r = db.execute(
+            text("INSERT INTO brand (brand_id, brand_name) VALUES ((SELECT COALESCE(MAX(brand_id),0)+1 FROM brand), :name) RETURNING brand_id"),
+            {"name": req.brand},
+        ).fetchone()
+        brand_id = r[0]
+
+    # Insert item
+    r = db.execute(
+        text("""
+            INSERT INTO item (item_id, category_id1, category_id2, brand_id, price)
+            VALUES ((SELECT COALESCE(MAX(item_id),0)+1 FROM item), :c1, :c2, :bid, :price)
+            RETURNING item_id
+        """),
+        {"c1": category_id1, "c2": category_id2, "bid": brand_id, "price": req.price},
+    ).fetchone()
+
+    db.commit()
+    return {"item_id": r[0]}
+
+
+@app.post("/feedback", tags=["interaction"])
 def feedback(req: FeedbackRequest, db: Session = Depends(get_db)):
     """Record a recommendation-driven interaction and check if it was a hit."""
     now = datetime.now(timezone.utc)
@@ -228,7 +465,7 @@ def feedback(req: FeedbackRequest, db: Session = Depends(get_db)):
     return {"status": "recorded", "hit": hit}
 
 
-@app.get("/explain")
+@app.get("/explain", tags=["RAG_explanation"])
 def explain(
     user_id: int,
     lang: Literal["zh", "en"] = "zh",
@@ -253,7 +490,7 @@ def explain(
     return {"user_id": user_id, **result}
 
 
-@app.post("/interaction")
+@app.post("/interaction", tags=["interaction"])
 def interaction(req: InteractionRequest, db: Session = Depends(get_db)):
     """Record an organic interaction (user found item independently)."""
     now = datetime.now(timezone.utc)

@@ -36,32 +36,47 @@ def _get_gemini_model():
 
 # ── Prompt templates ─────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = {
+STRUCTURED_SYSTEM_PROMPT = {
     "zh": (
-        "你是推薦系統的解釋助理。根據以下用戶資料，用繁體中文寫『一段』自然、簡潔的推薦解釋，"
-        "說明系統為什麼推薦這些商品給此用戶，必須涵蓋全部推薦商品。"
-        "請從『品牌偏好』、『類別偏好』、『相似用戶行為』三個角度找出共同點。\n\n"
-        "【極重要 — 輸出格式規則，違反則視為失敗】\n"
-        "1. 只輸出『最終解釋文字』本身，完全不要顯示任何思考過程、草稿、自我修正、檢查、或標記。\n"
-        "2. 禁止出現以下內容：'Draft', 'Final', 'Self-Correction', 'Refining', 'Internal Monologue', "
-        "'Wait', 'Let me', 'Re-evaluating', '*', '**', 條列符號、標題、前綴。\n"
-        "3. 禁止使用 markdown 格式（不要用 *、-、#、`）。\n"
-        "4. 直接從第一個字開始就是給用戶看的解釋本身，整段不超過 200 字。\n"
-        "5. 整個回應只能有『一段』純文字，不能有多段、不能有換行分隔的多個版本。"
+        "你是推薦系統的解釋助理。根據以下用戶資料，針對每一個推薦商品，用繁體中文寫一句話解釋為什麼推薦給此用戶。"
+        "可以從品牌偏好、類別偏好、相似用戶行為三個角度切入。\n\n"
+        "【輸出格式規則】\n"
+        "1. 每個商品一行，格式為：item_id=X（brand: B, category: C）：一句話原因\n"
+        "2. 不要顯示思考過程、草稿或任何額外說明。\n"
+        "3. 禁止 markdown（不要用 *、-、#、`）。\n"
+        "4. 直接從第一個商品開始輸出。"
     ),
     "en": (
         "You are an explanation assistant for a recommendation system. Based on the following user data, "
-        "write ONE concise, natural-language paragraph in English explaining why these items are recommended "
-        "to this user, covering all recommended items. Find commonalities from the angles of brand preference, "
-        "category preference, and similar user behavior.\n\n"
-        "[CRITICAL — Output format rules, violation = failure]\n"
-        "1. Output ONLY the final explanation text. Do NOT show any thinking, drafts, self-corrections, "
-        "checks, or annotations.\n"
-        "2. Forbidden: 'Draft', 'Final', 'Self-Correction', 'Refining', 'Internal Monologue', 'Wait', "
-        "'Let me', 'Re-evaluating', '*', '**', bullet points, titles, prefixes.\n"
+        "write ONE sentence per recommended item explaining why it was recommended to this user. "
+        "Draw from brand preference, category preference, and similar user behavior.\n\n"
+        "[Output format rules]\n"
+        "1. One line per item: item_id=X (brand: B, category: C): one-sentence reason\n"
+        "2. Do NOT show thinking, drafts, or extra commentary.\n"
         "3. No markdown (no *, -, #, `).\n"
-        "4. Start directly with the explanation. Max 200 words.\n"
-        "5. Only ONE paragraph of plain text. No multiple versions, no separators."
+        "4. Start directly from the first item."
+    ),
+}
+
+SUMMARY_SYSTEM_PROMPT = {
+    "zh": (
+        "你是推薦系統的摘要助理。根據以下逐條推薦解釋，用繁體中文寫『一段』重點摘要，"
+        "整合出此用戶的品牌偏好、類別偏好與相似用戶行為的核心規律，不超過 150 字。\n\n"
+        "【輸出格式規則】\n"
+        "1. 只輸出摘要本身，不要重複列出商品清單。\n"
+        "2. 不要顯示思考過程或草稿。\n"
+        "3. 禁止 markdown。\n"
+        "4. 直接從第一個字開始。"
+    ),
+    "en": (
+        "You are a summarization assistant for a recommendation system. Based on the structured explanation below, "
+        "write ONE concise paragraph (max 150 words) summarizing the key patterns: brand preference, "
+        "category preference, and similar user behavior insights.\n\n"
+        "[Output format rules]\n"
+        "1. Output only the summary — do not repeat the item list.\n"
+        "2. No thinking or drafts.\n"
+        "3. No markdown.\n"
+        "4. Start directly."
     ),
 }
 
@@ -95,8 +110,8 @@ def _format_user_block(label: str, ctx: UserContext) -> str:
     )
 
 
-def build_prompt(ctx: RagContext, lang: str) -> str:
-    parts = [SYSTEM_PROMPT[lang], ""]
+def build_structured_prompt(ctx: RagContext, lang: str) -> str:
+    parts = [STRUCTURED_SYSTEM_PROMPT[lang], ""]
 
     parts.append(_format_user_block("Target user", ctx.target_user))
     parts.append("")
@@ -115,6 +130,13 @@ def build_prompt(ctx: RagContext, lang: str) -> str:
     return "\n".join(parts)
 
 
+def build_summary_prompt(structured_output: str, lang: str) -> str:
+    return (
+        f"{SUMMARY_SYSTEM_PROMPT[lang]}\n\n"
+        f"## Structured explanation\n{structured_output}"
+    )
+
+
 # ── Main entry ───────────────────────────────────────────────────────────────
 
 
@@ -122,18 +144,46 @@ def explain_user(db: Session, user_id: int, lang: str = "zh") -> Optional[dict]:
     """
     Returns:
         None — user_representation 不存在（caller 應回 404）
-        {"explanation": str, "source": "llm" | "fallback"} — 成功或 LLM 失敗 fallback
+        {"structured": str, "summary": str, "source": "llm" | "fallback", ...} — 成功或 LLM 失敗 fallback
     """
     ctx = build_rag_context(db, user_id)
     if ctx is None:
         return None
 
-    prompt = build_prompt(ctx, lang)
+    recommended = [
+        {"item_id": i.item_id, "category": i.category, "brand": i.brand, "price": i.price}
+        for i in ctx.recommended_items
+    ]
+
+    user_context = {
+        "recent_items": [
+            {"item_id": i.item_id, "category": i.category, "brand": i.brand, "price": i.price}
+            for i in ctx.target_user.recent_items
+        ],
+        "top_categories": [{"category": name, "count": cnt} for name, cnt in ctx.target_user.top_categories],
+        "top_brands":     [{"brand": name, "count": cnt} for name, cnt in ctx.target_user.top_brands],
+    }
 
     try:
-        model = _get_gemini_model()
-        response = model.generate_content(prompt)
-        return {"explanation": response.text.strip(), "source": "llm"}
+        gemini = _get_gemini_model()
+
+        structured_prompt = build_structured_prompt(ctx, lang)
+        structured = gemini.generate_content(structured_prompt).text.strip()
+
+        summary_prompt = build_summary_prompt(structured, lang)
+        summary = gemini.generate_content(summary_prompt).text.strip()
+
+        return {
+            "summary": summary,
+            "source": "llm",
+            "recommended_items": recommended,
+            "user_context": user_context,
+        }
     except Exception:
         logger.exception("Gemini API call failed for user_id=%s", user_id)
-        return {"explanation": FALLBACK_TEXT[lang], "source": "fallback"}
+        return {
+            "summary": FALLBACK_TEXT[lang],
+            "source": "fallback",
+            "recommended_items": recommended,
+            "user_context": user_context,
+        }
