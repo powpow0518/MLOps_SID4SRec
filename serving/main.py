@@ -3,7 +3,7 @@ import pickle
 import torch
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Literal
 
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
@@ -11,11 +11,13 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 
 from training.sid4srec import SID4SRec
+from rag.explain import explain_user
 
 # ── Global model state ───────────────────────────────────────────────────────
 _model: SID4SRec = None
 _device: torch.device = None
 _args = None
+_model_version: str = None   # 目前 active 的 model version，啟動時從 DB 快取
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 MODEL_PATH = os.getenv("MODEL_PATH", "/models/best_model.pt")
@@ -42,7 +44,7 @@ def _create_tables():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _model, _device, _args
+    global _model, _device, _args, _model_version
 
     _create_tables()
 
@@ -59,6 +61,15 @@ async def lifespan(app: FastAPI):
     _model.load_state_dict(torch.load(MODEL_PATH, map_location=_device))
     _model.to(_device)
     _model.eval()
+
+    # Cache active model version from DB (used for user_representation UPSERT)
+    with SessionLocal() as db:
+        row = db.execute(
+            text("SELECT model_version FROM model_version WHERE is_active = TRUE LIMIT 1")
+        ).fetchone()
+        _model_version = row[0] if row else None
+        if _model_version is None:
+            print("Warning: no active model version in DB — user_representation UPSERT will be skipped")
 
     yield
 
@@ -92,21 +103,44 @@ def get_db():
 
 
 # ── Inference helper ──────────────────────────────────────────────────────────
-def _run_inference(item_sequence: List[int], top_k: int = 10) -> List[int]:
+def _run_inference(item_sequence: List[int], top_k: int = 10):
+    """Run inference and return (top_k item ids, user representation as list).
+
+    The user representation is the transformer's last-position output (dim=192),
+    used for RAG similarity search via user_representation table.
+    """
     max_len = _args.max_seq_length
     seq = item_sequence[-max_len:]
     padded = [0] * (max_len - len(seq)) + seq
     input_tensor = torch.tensor([padded], dtype=torch.long).to(_device)
 
     with torch.no_grad():
-        scores = _model.full_sort_predict(input_tensor)[0].cpu()  # torch.Tensor
+        user_repr = _model.get_user_representation(input_tensor)   # [1, 192]
+        scores = torch.matmul(user_repr, _model.items_emb().transpose(0, 1))[0].cpu()
 
     # Exclude items already seen
     for item_id in item_sequence:
         if 0 < item_id < scores.shape[0]:
             scores[item_id] = -1e9
 
-    return torch.argsort(scores, descending=True)[:top_k].tolist()
+    top_items = torch.argsort(scores, descending=True)[:top_k].tolist()
+    return top_items, user_repr[0].cpu().tolist()
+
+
+def _upsert_user_representation(db: Session, user_id: int, representation: List[float]):
+    if _model_version is None:
+        return
+    vector_str = "[" + ",".join(str(v) for v in representation) + "]"
+    db.execute(
+        text("""
+            INSERT INTO user_representation (user_id, model_version, representation)
+            VALUES (:uid, :mv, CAST(:repr AS vector))
+            ON CONFLICT (user_id, model_version) DO UPDATE
+                SET representation = EXCLUDED.representation,
+                    created_at     = NOW()
+        """),
+        {"uid": user_id, "mv": _model_version, "repr": vector_str},
+    )
 
 
 def _save_recommendation_log(db: Session, user_id: int, items: List[int]):
@@ -141,8 +175,9 @@ def recommend_from_db(user_id: int, top_k: int = 10, db: Session = Depends(get_d
         raise HTTPException(status_code=404, detail=f"No history found for user {user_id}")
 
     item_sequence = [r[0] for r in rows]
-    recommended = _run_inference(item_sequence, top_k=top_k)
+    recommended, user_repr = _run_inference(item_sequence, top_k=top_k)
     _save_recommendation_log(db, user_id, recommended)
+    _upsert_user_representation(db, user_id, user_repr)
     db.commit()
     return {"user_id": user_id, "recommendations": recommended}
 
@@ -150,8 +185,9 @@ def recommend_from_db(user_id: int, top_k: int = 10, db: Session = Depends(get_d
 @app.post("/recommend")
 def recommend_from_sequence(req: RecommendRequest, top_k: int = 10, db: Session = Depends(get_db)):
     """Accept item sequence directly, run inference without querying DB."""
-    recommended = _run_inference(req.item_sequence, top_k=top_k)
+    recommended, user_repr = _run_inference(req.item_sequence, top_k=top_k)
     _save_recommendation_log(db, req.user_id, recommended)
+    _upsert_user_representation(db, req.user_id, user_repr)
     db.commit()
     return {"user_id": req.user_id, "recommendations": recommended}
 
@@ -179,8 +215,42 @@ def feedback(req: FeedbackRequest, db: Session = Depends(get_db)):
     ).fetchone()
 
     hit = bool(row[0]) if row else False
+
+    db.execute(
+        text("""
+            INSERT INTO recommendation_feedback_log (user_id, item_id, timestamp, hit)
+            VALUES (:uid, :iid, :ts, :hit)
+        """),
+        {"uid": req.user_id, "iid": req.item_id, "ts": now, "hit": hit},
+    )
+
     db.commit()
     return {"status": "recorded", "hit": hit}
+
+
+@app.get("/explain")
+def explain(
+    user_id: int,
+    lang: Literal["zh", "en"] = "zh",
+    db: Session = Depends(get_db),
+):
+    """RAG 解釋為什麼系統推薦這些 item 給此 user。
+
+    流程：
+    1. 確認 user_representation 存在（不存在 → 404，請先呼叫 /recommend）
+    2. 取最新一筆推薦 + HNSW 找相似 user（cosine ≥ 0.5, top 3）
+    3. 組裝 context（每個 user 最近 10 個 item + top 3 cats/brands）
+    4. 呼叫 Gemini API → 自然語言解釋
+
+    Response: {user_id, explanation, source: "llm" | "fallback"}
+    """
+    result = explain_user(db, user_id, lang)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User {user_id} has no representation. Call POST /recommend first.",
+        )
+    return {"user_id": user_id, **result}
 
 
 @app.post("/interaction")

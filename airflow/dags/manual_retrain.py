@@ -54,6 +54,27 @@ with DAG(
         # ),
     )
 
+    # 產生新的 item embedding 並將此 model version 設為 active
+    generate_embeddings = BashOperator(
+        task_id="generate_embeddings",
+        bash_command=(
+            f"docker compose -f {COMPOSE_DIR}/docker-compose.yml "
+            "--project-name project_mlops --profile train run --no-deps --rm train "
+            "python -m scripts.generate_embeddings"
+        ),
+    )
+
+    # 用新模型 batch 算所有 user representation，存入 DB（~2s）
+    generate_user_representations = BashOperator(
+        task_id="generate_user_representations",
+        bash_command=(
+            f"docker compose -f {COMPOSE_DIR}/docker-compose.yml "
+            "--project-name project_mlops --profile train run --no-deps --rm train "
+            "python -m scripts.generate_user_representations"
+            # Note: -m 模式確保 /app 在 sys.path，training module 才能被 import
+        ),
+    )
+
     restart_serving = BashOperator(
         task_id="restart_serving",
         bash_command="docker restart mlops_serve_blue",
@@ -64,4 +85,11 @@ with DAG(
         python_callable=validate_model,
     )
 
-    backup_model >> run_training >> restart_serving >> health_check
+    (
+        backup_model
+        >> run_training
+        >> generate_embeddings
+        >> generate_user_representations
+        >> restart_serving
+        >> health_check
+    )

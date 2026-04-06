@@ -41,8 +41,51 @@ recommendation_log(id, user_id, recommended_items, created_at)
 
 ## 2. Model
 
+### 2.0 Train / Inference 流程概覽
+
+**訓練階段**
+```
+interaction table（user → item sequence）
+  + item / brand / category mapping
+          ↓
+       Model
+          ↓
+    best_model.pt → /models/
+```
+
+**Inference 階段（GET /recommend）**
+```
+user_id → interaction table → item sequence
+          ↓
+       Model（full_sort_predict）
+          ↓
+    user representation（192-dim, seq 最後一位的 output）
+          ↓
+    scores = user_repr · all_items_emb.T
+          ↓
+    top-5 item_ids → recommendation_log
+                   → user_representation table（UPSERT）
+```
+
+**每月 embedding 更新（monthly_embedding_update DAG）**
+```
+Model（items_emb()：item + category + brand embedding 串接）
+          ↓
+    item_embedding table（192-dim, per model_version）
+```
+
+**Retrain 後 batch user representation 更新（manual_retrain DAG 新增 task）**
+```
+所有 user 的 item sequence → Model → user_representation table（batch INSERT）
+耗時約 1.3 秒（0.06ms × 22,363 users）
+```
+
+---
+
+
+
 ### 2.1 選擇 SID4SRec（SASRec + Diffusion）
-**決策：** 使用碩士論文訓練好的 SID4SRec 模型（diffsas-Beauty-0.pt，後改名為 best_model.pt）。
+**決策：** 使用碩士論文訓練好的 SID4SRec 模型。
 
 **原因：**
 - SASRec 是 sequential recommendation 的強 baseline
@@ -110,6 +153,11 @@ recommendation_log(id, user_id, recommended_items, created_at)
 ---
 
 ## 4. Serving API
+
+### 4.0 推薦參數
+| 參數 | 值 |
+|------|-----|
+| recommend top-k | 5 |
 
 ### 4.1 GET vs POST /recommend 分離
 **決策：**
@@ -199,3 +247,144 @@ docker compose -f /opt/airflow/project/docker-compose.yml \
 **決策：** `generate_embeddings.py` 先查詢 DB 的有效 item_id，只存那些 item 的 embedding。
 
 **原因：** model 的 item_size（12105）大於 DB 實際存在的 item 數量（12101），多出來的 ID 不在 `item` table，直接 insert 會 FK 違反。
+
+---
+
+## 7. RAG Explanation System
+
+### 7.1 User Representation 儲存策略
+**決策：** 每次 `/recommend` 呼叫時 UPSERT `user_representation` table，以 `(user_id, model_version)` 為 key 覆蓋。
+
+**Schema：**
+```
+user_representation(user_id, model_version, representation vector(192), created_at)
+```
+
+**原因：**
+- RAG 永遠使用最新 representation，不需要歷史紀錄
+- Retrain 後新 model_version 透過 batch task 預先填充，避免 RAG 查無資料
+
+### 7.2 相似 User 查詢參數
+| 參數 | 值 |
+|------|-----|
+| 相似 user top-k | 3 |
+| 相似 user cosine similarity threshold | ≥ 0.5 |
+
+### 7.2.1 LLM 選擇
+**決策：** 使用 `models/gemini-2.5-flash` 透過 Google Gemini API。
+
+**原因：**
+- Token 量小（百筆以內商品資料），TPM 完全沒問題
+- 不需要多模態
+- 指令跟隨能力強，輸出乾淨單段純文字（不會 think out loud）
+- RAG 整合進 FastAPI（不是獨立服務），架構改動最小
+
+**環境變數：** `GEMINI_API_KEY`、`GEMINI_MODEL=models/gemini-2.5-flash`
+
+**初次嘗試 Gemma-4-31b-it（已棄用）：** 一開始用 `models/gemma-4-31b-it`，但測試發現它會把整個推理過程（Draft 1、Self-Correction、Final Polish 等）全部吐出來，prompt 加再多「不要 think out loud」的指令也壓不下來。Gemma 是 open model 風格，本來就不適合需要乾淨輸出的 production endpoint。換成 Gemini 2.5 Flash 後直接吐出單段純文字，無需後處理。
+
+### 7.3 一般用戶 RAG 流程
+```
+輸入：user_id
+  ↓
+查詢 user_representation + recommendation_log（最新 5 個 item）
+  ↓
+向量搜尋：找 cosine similarity ≥ 0.5 的前 3 個相似 user
+  ↓
+取得相似 user 的 item sequence + item 屬性（category, brand）+ recommend_list
+  ↓
+LLM Prompt：
+  - System：面向一般人，解釋為何推薦這些商品
+  - User：user A 互動歷史、推薦的 5 個 item、相似 user B/C/D 的資料
+  - 請從品牌、類別、相似用戶行為三個角度找出解釋
+  ↓
+輸出（一段自然語言，涵蓋全部推薦 item）：
+{
+  "user_id": 123,
+  "explanation": "...",
+  "source": "llm" | "fallback"
+}
+```
+
+### 7.4 Context 範圍（每個 user）
+**決策：** 每個 user（目標 + 相似）的 prompt context 包含：
+- 最近 10 次互動的 item（含 category, brand, price，JOIN item table）
+- 整段歷史的 top 3 categories（出現次數）
+- 整段歷史的 top 3 brands（出現次數）
+
+**原因：**
+- 「最近 10 個」抓近期偏好訊號
+- 「top 3 cats/brands」抓長期品味訊號（聚合統計，不爆 prompt）
+- Prompt size 固定，不會隨 user 歷史長度暴增
+
+### 7.5 新用戶處理（cold start）
+**決策：** `/explain` 查不到 `user_representation` 直接回 404，訊息「請先呼叫 POST /recommend」。
+
+**原因：**
+- SASRec 本質：沒互動就沒 representation
+- 新用戶應透過 `POST /recommend`（帶 item_sequence）或 `/feedback` 建立歷史
+- 不在 `/explain` 內做 fallback inference，避免額外延遲與職責混淆
+
+### 7.6 LLM 失敗處理
+**決策：** Gemini API 失敗時回 HTTP 200 + fallback 文字 + `source: "fallback"`，server side 記 log。
+
+**原因：**
+- Client 永遠拿到 explanation 字串，UI 一致
+- `source` 欄位讓 client 可以區分是真解釋還是 fallback
+- 失敗 log 給 server 側追蹤 quota / 網路問題
+
+### 7.7 Code 結構
+**決策：** RAG 邏輯獨立成 `rag/` module，serving 只 import。
+```
+rag/
+  context.py    # DB 查詢 → RagContext dataclass
+  explain.py    # prompt 組裝 + Gemini API + main entry
+serving/main.py # 只掛 GET /explain endpoint
+```
+
+**原因：**
+- `serving/main.py` 不會肥大
+- RAG 內部邏輯可獨立測試（例如 mock Gemini 測 prompt builder）
+- 之後加新 RAG endpoint（管理員 dashboard 等）有地方放
+
+### 7.8 多語言支援
+**決策：** `/explain?lang=zh|en`，預設 `zh`（繁體中文）。System prompt 模板按 lang 切換，data 段落（item 屬性）保持英文不變。
+
+---
+
+## 8. 分析 Dashboard（Grafana）
+
+### 8.1 工具選擇
+**決策：** 使用 Grafana 作為分析 dashboard。
+
+**原因：**
+- 直連 PostgreSQL，不需要額外 API
+- 標準 SQL 即可完成所有需求
+- 加一個 Docker container，架構改動最小
+
+### 8.2 準確率定義
+| 狀況 | 定義 | 納入分析 |
+|------|------|------|
+| **命中** | `/feedback` 互動的 item 在 recommend list 內 | ✅ |
+| **未命中** | `/feedback` 互動的 item 不在 recommend list 內 | ✅ |
+| `/interaction` 資料 | 直接搜尋行為，非推薦情境 | ❌ |
+
+**準確率 = 命中 / （命中 + 未命中）**
+
+不需要相似度計算，`/feedback` 資料本身已排除直接搜尋行為。
+
+### 8.3 Dashboard Drill Down 維度
+| 維度 | 說明 |
+|------|------|
+| 整體比例 | 命中率概覽 |
+| by category | 哪些類別命中率高/低（JOIN `item`） |
+| by brand | 哪些品牌命中率高/低（JOIN `item`） |
+| by user 活躍度 | 5–10 次 / 10–20 次 / > 20 次互動 |
+
+### 8.4 新增 Table Schema
+```sql
+recommendation_feedback_log(id, user_id, item_id, timestamp, hit)
+```
+- 由 `POST /feedback` 觸發寫入
+- category / brand 查詢時動態 JOIN `item` table
+- user 活躍度查詢時動態 JOIN `interaction` table

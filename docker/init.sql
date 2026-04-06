@@ -71,8 +71,35 @@ CREATE TABLE IF NOT EXISTS recommendation_log (
     created_at          TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+-- ── User representation ───────────────────────────────────────────────────────
+-- 每個 user 在特定 model version 下的 sequence representation（transformer 最後一位輸出）
+
+CREATE TABLE IF NOT EXISTS user_representation (
+    user_id         INTEGER NOT NULL REFERENCES "user"(user_id),
+    model_version   TEXT    NOT NULL REFERENCES model_version(model_version),
+    representation  vector(192) NOT NULL,
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, model_version)
+);
+
+CREATE INDEX IF NOT EXISTS user_representation_hnsw_idx
+    ON user_representation USING hnsw (representation vector_cosine_ops);
+
+-- ── Feedback log ──────────────────────────────────────────────────────────────
+-- /feedback 端點觸發時記錄，用於計算推薦命中率（Grafana dashboard）
+
+CREATE TABLE IF NOT EXISTS recommendation_feedback_log (
+    id          SERIAL    PRIMARY KEY,
+    user_id     INTEGER   NOT NULL,
+    item_id     INTEGER   NOT NULL,
+    timestamp   TIMESTAMP NOT NULL,
+    hit         BOOLEAN   NOT NULL
+);
+
 -- ── Indexes ───────────────────────────────────────────────────────────────────
 
 CREATE INDEX IF NOT EXISTS idx_interaction_user_id  ON interaction(user_id);
 CREATE INDEX IF NOT EXISTS idx_interaction_timestamp ON interaction(timestamp);
 CREATE INDEX IF NOT EXISTS idx_rec_log_user_id       ON recommendation_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_log_user_id  ON recommendation_feedback_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_log_timestamp ON recommendation_feedback_log(timestamp);

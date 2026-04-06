@@ -234,6 +234,17 @@ class SID4SRec(nn.Module):
         return loss
 
 
+    def get_user_representation(self, item_seq):
+        """Return the user representation vector (last position of transformer output).
+
+        Shape: [B, hidden_size * 3] = [B, 192]
+        Used for RAG similarity search and user_representation table.
+        """
+        extended_attention_mask = self.get_extended_attention_mask(item_seq)
+        sequence_emb = self.add_position_embedding(item_seq)
+        seq_output = self.forward(sequence_emb, extended_attention_mask)
+        return seq_output[:, -1, :]
+
     def full_sort_predict(self, item_seq):
         extended_attention_mask = self.get_extended_attention_mask(item_seq)
         sequence_emb = self.add_position_embedding(item_seq)

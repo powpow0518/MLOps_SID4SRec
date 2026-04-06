@@ -15,6 +15,8 @@ RUN pip install --no-cache-dir -r requirements-serve.txt
 COPY serving/     ./serving/
 # model 架構（inference 時需要 load model class）
 COPY training/    ./training/
+# RAG explanation module
+COPY rag/         ./rag/
 
 # Model weights are mounted via Docker volume at runtime:
 #   models/ → /app/models
