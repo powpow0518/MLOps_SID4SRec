@@ -1,5 +1,6 @@
 import os
 import pickle
+import random
 import torch
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
@@ -253,28 +254,136 @@ def get_db():
         db.close()
 
 
+# ── Cold-start handling ───────────────────────────────────────────────────────
+def _build_cold_start_data(db: Session):
+    """Build substitution data for items added after model training (item_id >= item_size).
+
+    For each cold-start item we synthesise an embedding by averaging in-vocab items
+    matched by metadata, with the following priority:
+        1. category_id1 == cold.cat AND brand_id == cold.brand
+        2. category_id1 == cold.cat OR  brand_id == cold.brand
+        3. random in-vocab item (no metadata match)
+
+    Returns:
+        substitute_map (Dict[int, int]):
+            cold_item_id -> a representative in-vocab item_id, used to rewrite the
+            input sequence so the model's nn.Embedding lookup doesn't crash.
+        cold_item_ids (List[int]):
+            cold-start item_ids in the same order as `cold_embeddings` rows.
+        cold_embeddings (Optional[Tensor]):
+            [N_cold, emb_dim] synthetic embeddings, or None when there are no
+            cold-start items in the DB.
+    """
+    item_size = _args.item_size
+    cat_lookup = _args.category_lookup   # tensor [item_size] on _device
+    brand_lookup = _args.brand_lookup    # tensor [item_size] on _device
+
+    rows = db.execute(
+        text("""
+            SELECT item_id, category_id1, brand_id
+            FROM item
+            WHERE item_id >= :sz
+            ORDER BY item_id
+        """),
+        {"sz": item_size},
+    ).fetchall()
+
+    if not rows:
+        return {}, [], None
+
+    with torch.no_grad():
+        in_vocab_emb = _model.items_emb()  # [item_size, emb_dim]
+
+    substitute_map: dict = {}
+    cold_item_ids: List[int] = []
+    cold_emb_list = []
+
+    for cold_id, cold_cat, cold_brand in rows:
+        cat_t = torch.tensor(cold_cat or 0, device=_device)
+        brand_t = torch.tensor(cold_brand or 0, device=_device)
+
+        match = torch.where((cat_lookup == cat_t) & (brand_lookup == brand_t))[0]
+        if match.numel() == 0:
+            match = torch.where((cat_lookup == cat_t) | (brand_lookup == brand_t))[0]
+        if match.numel() == 0:
+            match = torch.tensor([random.randint(1, item_size - 1)], device=_device)
+
+        avg_emb = in_vocab_emb[match].mean(dim=0)  # [emb_dim]
+
+        substitute_map[int(cold_id)] = int(match[0].item())
+        cold_item_ids.append(int(cold_id))
+        cold_emb_list.append(avg_emb)
+
+    cold_embeddings = torch.stack(cold_emb_list, dim=0)  # [N_cold, emb_dim]
+    return substitute_map, cold_item_ids, cold_embeddings
+
+
 # ── Inference helper ──────────────────────────────────────────────────────────
-def _run_inference(item_sequence: List[int], top_k: int = 20):
+def _run_inference(
+    item_sequence: List[int],
+    top_k: int = 20,
+    substitute_map: Optional[dict] = None,
+    cold_item_ids: Optional[List[int]] = None,
+    cold_embeddings: Optional[torch.Tensor] = None,
+):
     """Run inference and return (top_k item ids, user representation as list).
 
     The user representation is the transformer's last-position output (dim=192),
     used for RAG similarity search via user_representation table.
+
+    Cold-start items (item_id >= model.item_size) are handled by:
+      - rewriting them in the input sequence to a representative in-vocab item_id
+        via `substitute_map` so nn.Embedding lookup doesn't crash, and
+      - scoring them against synthetic embeddings (`cold_embeddings`) so they can
+        still appear in the top-k.
     """
+    item_size = _args.item_size
+    substitute_map = substitute_map or {}
+
+    # Rewrite cold-start ids in the input sequence so the embedding lookup is safe.
+    # Anything still out of range after rewrite (shouldn't happen, but defensively)
+    # falls back to padding (0).
+    safe_seq = []
+    for iid in item_sequence:
+        if iid >= item_size:
+            safe_seq.append(substitute_map.get(iid, 0))
+        else:
+            safe_seq.append(iid)
+
     max_len = _args.max_seq_length
-    seq = item_sequence[-max_len:]
+    seq = safe_seq[-max_len:]
     padded = [0] * (max_len - len(seq)) + seq
     input_tensor = torch.tensor([padded], dtype=torch.long).to(_device)
 
     with torch.no_grad():
-        user_repr = _model.get_user_representation(input_tensor)   # [1, 192]
-        scores = torch.matmul(user_repr, _model.items_emb().transpose(0, 1))[0].cpu()
+        user_repr = _model.get_user_representation(input_tensor)   # [1, emb_dim]
+        in_vocab_emb = _model.items_emb()                          # [item_size, emb_dim]
+        in_vocab_scores = torch.matmul(user_repr, in_vocab_emb.transpose(0, 1))[0].cpu()
 
-    # Exclude items already seen
+        if cold_embeddings is not None and cold_embeddings.numel() > 0:
+            cold_scores = torch.matmul(user_repr, cold_embeddings.transpose(0, 1))[0].cpu()
+        else:
+            cold_scores = None
+
+    # Exclude in-vocab items already seen
     for item_id in item_sequence:
-        if 0 < item_id < scores.shape[0]:
-            scores[item_id] = -1e9
+        if 0 < item_id < in_vocab_scores.shape[0]:
+            in_vocab_scores[item_id] = -1e9
 
-    top_items = torch.argsort(scores, descending=True)[:top_k].tolist()
+    # Combine in-vocab + cold-start scores; map indices back to actual item_ids
+    if cold_scores is not None and cold_item_ids:
+        seen_set = set(item_sequence)
+        for i, cid in enumerate(cold_item_ids):
+            if cid in seen_set:
+                cold_scores[i] = -1e9
+        all_scores = torch.cat([in_vocab_scores, cold_scores])
+        all_ids = list(range(item_size)) + cold_item_ids
+    else:
+        all_scores = in_vocab_scores
+        all_ids = list(range(item_size))
+
+    top_idx = torch.argsort(all_scores, descending=True)[:top_k].tolist()
+    top_items = [all_ids[i] for i in top_idx]
     return top_items, user_repr[0].cpu().tolist()
 
 
@@ -326,7 +435,13 @@ def recommend_from_db(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"No history found for user {user_id}")
 
     item_sequence = [r[0] for r in rows]
-    recommended, user_repr = _run_inference(item_sequence)
+    substitute_map, cold_item_ids, cold_embeddings = _build_cold_start_data(db)
+    recommended, user_repr = _run_inference(
+        item_sequence,
+        substitute_map=substitute_map,
+        cold_item_ids=cold_item_ids,
+        cold_embeddings=cold_embeddings,
+    )
     _save_recommendation_log(db, user_id, recommended)
     _upsert_user_representation(db, user_id, user_repr)
     db.commit()

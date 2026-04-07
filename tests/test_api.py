@@ -19,6 +19,7 @@ import os
 
 import pytest
 import requests
+from sqlalchemy import text
 
 pytestmark = pytest.mark.integration
 
@@ -58,6 +59,46 @@ class TestRecommend:
     def test_missing_user_id_rejected(self, http, base_url):
         r = http.get(f"{base_url}/recommend")
         assert r.status_code == 422
+
+    def test_cold_start_item_in_db_does_not_break_recommend(
+        self, http, base_url, temp_user, temp_item
+    ):
+        """A cold-start item exists in DB (temp_item, item_id >= model.item_size).
+
+        /recommend for an unrelated user must still succeed — this exercises
+        the `_build_cold_start_data` path and the synthetic scoring branch.
+        """
+        r = http.get(f"{base_url}/recommend", params={"user_id": temp_user})
+        assert r.status_code == 200
+        body = r.json()
+        assert len(body["recommendations"]) == 20
+
+    def test_cold_start_item_in_history_does_not_crash(
+        self, http, base_url, db, temp_item
+    ):
+        """User history contains a cold-start item.
+
+        Previously this raised IndexError at the model's nn.Embedding lookup;
+        now the substitute_map should rewrite the cold id to an in-vocab id
+        before inference, so /recommend returns 200.
+        """
+        r = http.post(f"{base_url}/user", json={"item_sequence": [temp_item]})
+        assert r.status_code == 201
+        user_id = r.json()["user_id"]
+
+        try:
+            r = http.get(f"{base_url}/recommend", params={"user_id": user_id})
+            assert r.status_code == 200
+            body = r.json()
+            assert body["user_id"] == user_id
+            assert len(body["recommendations"]) == 20
+            assert all(isinstance(i, int) for i in body["recommendations"])
+        finally:
+            db.execute(text("DELETE FROM recommendation_log WHERE user_id = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM user_representation WHERE user_id = :uid"), {"uid": user_id})
+            db.execute(text("DELETE FROM interaction WHERE user_id = :uid"), {"uid": user_id})
+            db.execute(text('DELETE FROM "user" WHERE user_id = :uid'), {"uid": user_id})
+            db.commit()
 
 
 # ── POST /user ────────────────────────────────────────────────────────────────
