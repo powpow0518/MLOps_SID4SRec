@@ -33,19 +33,7 @@
 
 ## ❌ 未解決問題（待補強）
 
-### 🔴 重要 1：cold-start `/recommend` 噴 IndexError
-
-**問題：** 對系統中存在但從未被推薦或互動的 item（cold-start item），呼叫 `/recommend` 時會拋出 `IndexError`，而非乾淨的 404 或 fallback。
-
-**原因：** `full_sort_predict` 的 item index 範圍是 `[0, model.item_size)`，但 DB 的 item_id 不一定連續，若 item_id 超出 model index 範圍就會 OOB crash。
-
-**影響：** Demo 時的炸彈——任何只有 cold-start item 的用戶都會噴錯。
-
-**需要做的：** 推論前確認所有 item_id < model.item_size，超出範圍的 item 過濾掉或回 422。
-
----
-
-### 🟡 重要 2：`/feedback` / `/interaction` 缺 input validation
+### 🟡 重要 1：`/feedback` / `/interaction` 缺 input validation
 
 **問題：** 兩個 endpoint 都沒有驗證 `user_id` 和 `item_id` 是否存在於 DB，直接 INSERT 可能造成 FK 違反。
 
@@ -55,7 +43,7 @@
 
 ---
 
-### 🟡 重要 3：訓練程式碼用 `print()` 而非結構化 logging
+### 🟡 重要 2：訓練程式碼用 `print()` 而非結構化 logging
 
 **問題：** `training/trainer.py` 全部用 `print()` 輸出訓練進度，無 log level、無 timestamp、無格式。`config.py` 88 個 hyperparameter 全用 argparse，論文 code 搬過來的氣味重。
 
@@ -65,7 +53,7 @@
 
 ---
 
-### 🟡 重要 4：Grafana datasource hardcode 密碼
+### 🟡 重要 3：Grafana datasource hardcode 密碼
 
 **問題：** `grafana/provisioning/datasources/postgres.yaml` 直接寫死 `password: mlops`，沒走環境變數。
 
@@ -100,7 +88,7 @@
 | CI/CD | 7 / 10 | GitHub Actions 已建；缺 staging deploy check |
 | 文件 | 9 / 10 | README + DECISIONS + PROJECT_REVIEW 持續更新 |
 | Observability | 6 / 10 | Grafana 有 dashboard；缺 metrics / traces |
-| 一致性（設計 vs 實作）| 9 / 10 | 剩 cold-start crash、validation gap |
+| 一致性（設計 vs 實作）| 9 / 10 | cold-start 已修；剩 validation gap |
 
 **總分：8 / 10 — 可以拿去面試，剩下是加分項。**
 
