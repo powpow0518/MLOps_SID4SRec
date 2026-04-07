@@ -32,7 +32,11 @@
 
 ## ❌ 會被資深面試官立刻挑出的硬傷（必須補）
 
-### 🔴 致命 1：完全沒有測試
+### 🔴 致命 1：完全沒有測試 — ✅ 已修復（2026-04-07）
+
+> `tests/test_api.py` 47 個整合測試（42 pass / 3 xfail / 2 LLM skip），含 conftest 自動清理 fixture、parametrize invalid input、xfail 釘住已知 validation gap。`tests/test_rag_explain.py` 另有 prompt builder 單元測試。
+
+
 
 ```
 $ find tests/ test_*.py *_test.py → 0 個檔案
@@ -69,7 +73,11 @@ bash_command="echo 'Simulating training... done'",
 
 ---
 
-### 🔴 致命 3：沒有 CI/CD
+### 🔴 致命 3：沒有 CI/CD — ✅ 已修復（2026-04-07）
+
+> `.github/workflows/` 已加入 lint + test + docker build pipeline（commit `3c050d8`）。
+
+
 
 - 沒有 `.github/workflows/`
 - 沒有 lint / type check / test 自動化
@@ -80,14 +88,18 @@ bash_command="echo 'Simulating training... done'",
 
 ---
 
-### 🟡 重要 4：沒有 `.env.example`
+### 🟡 重要 4：沒有 `.env.example` — ✅ 已修復
 
 README 寫 `cp .env.example .env`，但 repo 裡沒有這個檔案。
 Clone 下來的人完全不知道要設哪些變數。
 
 ---
 
-### 🟡 重要 5：配置漂移
+### 🟡 重要 5：配置漂移 — ✅ 已修復
+
+> `docker-compose.yml` 預設值已改為 `gemini-2.5-flash`。
+
+
 
 `docker-compose.yml:37`
 
@@ -100,7 +112,11 @@ GEMINI_MODEL: ${GEMINI_MODEL:-models/gemma-4-31b-it}
 
 ---
 
-### 🟡 重要 6：MAX(id)+1 競態條件
+### 🟡 重要 6：MAX(id)+1 競態條件 — ✅ 已修復
+
+> 全部改用 `nextval('xxx_seq')`，新增 4 個 sequence 到 `init.sql`，並有 `scripts/sync_sequences.sql` 補跑用。
+
+
 
 `serving/main.py:352`、`383`、`413`、`422`
 
@@ -113,7 +129,11 @@ schema 應該用 `SERIAL`，這個一眼就會被資深 backend 點出來。
 
 ---
 
-### 🟡 重要 7：Blue-Green 名實不符
+### 🟡 重要 7：Blue-Green 名實不符 — ✅ 已修復（2026-04-07）
+
+> 第一版用 Traefik + container label priority 實作，但在 Docker Desktop on Windows 踩到 socket bridge bug；最終改為 Nginx + 靜態 upstream + sed swap + `nginx -s reload`。`manual_retrain` DAG 已新增 `swap_nginx_upstream` task，含 pre-flight grep 防呆。詳見 `DECISIONS.md` §3.4。目前限制：DAG 只支援 BLUE→GREEN 單向，雙向是 TODO。
+
+
 
 `DECISIONS.md` 3.4 自己寫：
 
@@ -125,7 +145,11 @@ schema 應該用 `SERIAL`，這個一眼就會被資深 backend 點出來。
 
 ---
 
-### 🟡 重要 8：訓練程式碼的維護度
+### 🟡 重要 8：訓練程式碼的維護度 — ⚠️ 部分修復
+
+> `sid4srec.py` 130 行 commented-out code 已清除、`trainer.py` typo 已修。logging / Hydra / argparse 仍未處理。
+
+
 
 - `training/sid4srec.py:412-542`：130 行 commented-out code 沒清掉
 - `training/trainer.py:17`：`# define the start epoch for keepon trainingzhonss` ← typo
@@ -154,18 +178,20 @@ schema 應該用 `SERIAL`，這個一眼就會被資深 backend 點出來。
 
 ## 📊 履歷專案成熟度評分
 
-| 面向 | 分數 | 備註 |
-|------|-----|------|
-| 系統設計廣度 | 9 / 10 | 涵蓋面非常廣 |
-| 基礎設施 / Docker | 8 / 10 | 完整但有 secret 漏洞 |
-| 程式碼品質 | 5 / 10 | training/ 目錄拖累平均 |
-| **測試** | **0 / 10** | **完全沒有** |
-| **CI/CD** | **0 / 10** | **完全沒有** |
-| 文件 | 9 / 10 | README + DECISIONS 寫得很好 |
-| Observability | 6 / 10 | 有 Grafana 但缺 metrics / traces |
-| 一致性（設計 vs 實作） | 5 / 10 | DAG 假指令、Blue-Green 沒做、Gemma 預設值 |
+| 面向 | 原始分 | 更新分（2026-04-07） | 備註 |
+|------|-------|---------------------|------|
+| 系統設計廣度 | 9 / 10 | 9 / 10 | 涵蓋面非常廣 |
+| 基礎設施 / Docker | 8 / 10 | 8 / 10 | Nginx 取代 Traefik 後更穩；secret 漏洞仍在 |
+| 程式碼品質 | 5 / 10 | 6 / 10 | training/ 已局部清理 |
+| **測試** | **0 / 10** | **7 / 10** | 47 個整合測試 + 3 xfail 釘 gap，缺 unit/mock 層 |
+| **CI/CD** | **0 / 10** | **7 / 10** | GitHub Actions（lint + test + docker build）已建 |
+| 文件 | 9 / 10 | 9 / 10 | README + DECISIONS + PROJECT_REVIEW 持續更新 |
+| Observability | 6 / 10 | 6 / 10 | 仍缺 metrics / traces |
+| 一致性（設計 vs 實作） | 5 / 10 | 8 / 10 | Blue-Green 真的做了、預設值對齊、race condition 修了；剩 DAG 假 retrain |
 
-**總分：6.5 / 10**
+**原始總分：6.5 / 10 → 更新後：7.5 / 10**
+
+剩下扣分集中在：cold-start IndexError、`/feedback`/`/interaction` 缺 validation、manual_retrain 的 run_training 仍是 echo、Grafana datasource 還在 hardcode 密碼。
 
 ---
 

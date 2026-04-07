@@ -24,13 +24,13 @@ This system serves personalized item recommendations using **SID4SRec** — a SA
 ┌──────────────────────────────────────────────────────────────┐
 │                       Docker Compose                         │
 │                                                              │
-│  Client → Traefik(:80) ──priority=100──▶ serve_green        │
-│                      └──priority=1─────▶ serve_blue         │
+│  Client → Nginx(:80) ──upstream──▶ serve_blue (active)      │
+│                                 └─▶ serve_green (on retrain)│
 │                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐      │
-│  │ traefik  │  │ train    │  │ airflow  │  │grafana │      │
+│  │  nginx   │  │ train    │  │ airflow  │  │grafana │      │
 │  │ (port 80)│  │ (profile │  │(sched +  │  │(port   │      │
-│  │ dash:8888│  │  train)  │  │ websvr)  │  │ 3000)  │      │
+│  │          │  │  train)  │  │ websvr)  │  │ 3000)  │      │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘      │
 │       │             │             │             │           │
 │       └─────────────┴──────┬──────┘             │           │
@@ -42,7 +42,7 @@ This system serves personalized item recommendations using **SID4SRec** — a SA
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Serving**: FastAPI, model loaded at startup, Blue-Green deployment via Traefik router priority
+- **Serving**: FastAPI, model loaded at startup, Blue-Green deployment behind Nginx (static upstream + `nginx -s reload` swap)
 - **Training**: PyTorch 2.0 + CUDA 11.7, triggered via Airflow or manually
 - **Orchestration**: Apache Airflow with two DAGs
 - **Storage**: PostgreSQL for interactions/metadata + pgvector for item embeddings (192-dim) and user representations (192-dim)
@@ -56,6 +56,7 @@ This system serves personalized item recommendations using **SID4SRec** — a SA
 |-----------|-----------|
 | Model | SID4SRec (SASRec + Diffusion + Contrastive Learning) |
 | Serving | FastAPI |
+| Reverse Proxy | Nginx |
 | Orchestration | Apache Airflow |
 | Database | PostgreSQL 16 + pgvector |
 | Analytics | Grafana |
@@ -88,7 +89,7 @@ This system serves personalized item recommendations using **SID4SRec** — a SA
 - **Single PostgreSQL instance** for both relational data and vector search (pgvector HNSW) — dataset scale doesn't warrant a dedicated vector DB
 - **User representation**: computed at inference time (UPSERT on every `/recommend`) + batch-regenerated for all users after each retrain (~2s for 22K users, batch=256)
 - **Train/Serve container separation** — train service uses `profiles: [train]` to avoid accidental startup; triggered by Airflow via `docker compose run`
-- **Blue-Green deployment** — serve_blue (port 8000) always on; serve_green (port 8001) used during model updates
+- **Blue-Green deployment** — serve_blue always on behind Nginx; serve_green spun up during retrain, traffic swapped via `sed` on `nginx.conf` + `nginx -s reload`
 - **Model naming convention** — always `best_model.pt`; retrain backs up to `best_model_prev.pt` for rollback
 - **RAG explanation** — two-step Gemini API (structured per-item → summary paragraph); integrated into FastAPI; finds top-3 similar users (cosine ≥ 0.5) via pgvector; returns `summary`, `recommended_items` (top-20), and `user_context`
 - **Recommend top-k = 20** — HR@5=0.0774, HR@20=0.1533; top-20 doubles hit rate
@@ -187,13 +188,13 @@ This is an active learning project. Current progress:
 ┌──────────────────────────────────────────────────────────────┐
 │                       Docker Compose                         │
 │                                                              │
-│  Client → Traefik(:80) ──priority=100──▶ serve_green        │
-│                      └──priority=1─────▶ serve_blue         │
+│  Client → Nginx(:80) ──upstream──▶ serve_blue（常駐）       │
+│                                 └─▶ serve_green（重訓時）  │
 │                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐      │
-│  │ traefik  │  │ train    │  │ airflow  │  │grafana │      │
+│  │  nginx   │  │ train    │  │ airflow  │  │grafana │      │
 │  │ (port 80)│  │ (profile │  │(排程 +   │  │(port   │      │
-│  │ dash:8888│  │  train)  │  │ websvr)  │  │ 3000)  │      │
+│  │          │  │  train)  │  │ websvr)  │  │ 3000)  │      │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘      │
 │       │             │             │             │           │
 │       └─────────────┴──────┬──────┘             │           │
@@ -205,7 +206,7 @@ This is an active learning project. Current progress:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **Serving**：FastAPI，啟動時載入模型常駐記憶體；Traefik 透過 container label priority 實現 Blue-Green 零 downtime 切換
+- **Serving**：FastAPI，啟動時載入模型常駐記憶體；Nginx 作為 reverse proxy，blue/green 切換靠 sed 改 upstream + `nginx -s reload`
 - **Training**：PyTorch 2.0 + CUDA 11.7，由 Airflow 觸發或手動執行
 - **Orchestration**：Apache Airflow，管理兩條 DAG
 - **Storage**：PostgreSQL 存放互動紀錄與商品中繼資料；pgvector 存放 192-dim item embedding 與 user representation
@@ -219,6 +220,7 @@ This is an active learning project. Current progress:
 |------|------|
 | 模型 | SID4SRec（SASRec + Diffusion + 對比學習） |
 | 服務層 | FastAPI |
+| Reverse Proxy | Nginx |
 | 排程 | Apache Airflow |
 | 資料庫 | PostgreSQL 16 + pgvector |
 | 分析 | Grafana |
@@ -251,7 +253,7 @@ This is an active learning project. Current progress:
 - **單一 PostgreSQL 實例**同時處理關聯式資料與向量搜尋（pgvector HNSW）— 資料規模不需要獨立向量資料庫
 - **User Representation 雙軌更新**：每次 `/recommend` 推論時即時 UPSERT；重訓後由 DAG batch 更新全部 user（~2s，22K users，batch=256）
 - **Train / Serve container 分離** — train service 使用 `profiles: [train]`，避免意外啟動；由 Airflow 透過 `docker compose run` 觸發
-- **Blue-Green Deployment** — serve_blue（port 8000）常駐；serve_green（port 8001）在模型更新時啟動驗證
+- **Blue-Green Deployment** — serve_blue 常駐於 Nginx 後；retrain 時啟動 serve_green，透過 sed 改 nginx.conf upstream + `nginx -s reload` 切換流量
 - **模型命名慣例** — 統一使用 `best_model.pt`；重訓前備份為 `best_model_prev.pt` 供 rollback
 - **RAG 解釋系統** — 兩階段 Gemini API（逐條結構化 → 重點摘要）；整合進 FastAPI；透過 pgvector 找 top-3 相似 user（cosine ≥ 0.5）；回傳 `summary`、`recommended_items`（top-20）、`user_context`
 - **Recommend top-k = 20** — HR@5=0.0774，HR@20=0.1533；top-20 命中率是 top-5 的兩倍

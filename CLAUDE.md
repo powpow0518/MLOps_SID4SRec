@@ -73,7 +73,8 @@ For the following topics, **never output a full solution or design directly**. I
 ## Tech Stack
 
 - Language: Python
-- Serving: FastAPI（port 8000，Blue-Green deployment）
+- Serving: FastAPI（Blue-Green deployment，外部統一走 Nginx port 80）
+- Reverse Proxy: Nginx（靜態 config + Docker DNS resolver，blue/green 切換靠 sed + nginx -s reload）
 - Orchestration: Apache Airflow（port 8080）
 - Model: SID4SRec（SASRec + Diffusion + Contrastive Learning）
 - Database: PostgreSQL 16 + pgvector（HNSW index，192-dim embeddings）
