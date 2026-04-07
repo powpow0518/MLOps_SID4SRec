@@ -131,34 +131,46 @@ Model（items_emb()：item + category + brand embedding 串接）
 - 避免 `docker compose up` 時意外啟動 train，浪費資源
 - 由 Airflow 透過 `docker compose --profile train run` 觸發
 
-### 3.4 Blue-Green Deployment（Traefik + Container Priority）
-**決策：** Traefik 作為 reverse proxy 坐在 serve_blue / serve_green 前面，透過 router priority 實現零 downtime 切換。
+### 3.4 Blue-Green Deployment（Nginx + Static Config）
+**決策：** Nginx 作為 reverse proxy 坐在 serve_blue / serve_green 前面，靜態 config + Docker 內建 DNS 解析 backend，切換時 swap config + `nginx -s reload`。
 
 **架構：**
 ```
-Client → Traefik(:80) → serve_blue  (priority=1,  預設 active)
-                      → serve_green (priority=100, retrain 時啟動)
+Client → Nginx(:80) → serve_blue  (預設 active)
+                    → serve_green (retrain 時啟動，DAG 切換 upstream 後接管)
 ```
 
 **切換流程（manual_retrain DAG 自動執行）：**
-1. 訓練完成後 `docker compose up serve_green`（GREEN 帶新 model 啟動）
-2. Traefik 感知 GREEN，priority=100 > 1，立即搶佔路由
-3. 內網直連 `http://mlops_serve_green:8000/health` 確認 GREEN 正常
-4. `sleep 2 && docker stop mlops_serve_blue`（短請求 < 1s，2s 足夠讓 in-flight 完成）
-5. 透過 Traefik 打 `/health` 確認整條路徑正常
+1. 訓練完成後 `docker compose --profile green up -d serve_green`
+2. 內網直連 `http://mlops_serve_green:8000/health` 確認 GREEN 正常
+3. Swap nginx upstream config（將 `serve_blue:8000` 換成 `serve_green:8000`）
+4. `docker exec mlops_nginx nginx -s reload`（reload 是 graceful：worker 會處理完現有連線才退出）
+5. `sleep 2 && docker stop mlops_serve_blue`
+6. 透過 Nginx 打 `/health` 確認整條路徑正常
 
-**為什麼選 Traefik 不選 Nginx：**
-- Traefik 掛 Docker socket，透過 container label 動態感知 backend，切換不需改設定檔或 reload
-- Nginx 切換需要修改 upstream 設定並執行 `nginx -s reload`，在 DAG 自動化中更繁瑣
+**為什麼從 Traefik 換成 Nginx（2026-04-07）：**
+- 原本選 Traefik 的理由是「掛 Docker socket → 透過 label 動態感知 backend → 切換不用 reload」。
+- 實際在 Docker Desktop on Windows 環境踩到 bug：Traefik 連 `/var/run/docker.sock` 會收到 daemon 回的空 response（`Error response from daemon: ""`），導致 Docker provider 完全讀不到 container labels，所有 router 都註冊不上，外部訪問一律 404。
+- 嘗試過的繞法都失敗：
+  - 改用 npipe endpoint → Linux 容器不支援 named pipe（"protocol not available"）
+  - 加 `tecnativa/docker-socket-proxy` 中介 → proxy 收到 daemon HTTP 400，問題在 Docker Desktop bridge 本身，proxy 擋不住
+- Nginx 完全不需要連 Docker daemon，只用 Docker 內建 DNS（`127.0.0.11`）解析 service 名稱，從根本上避開這條失敗路徑。
+- 代價：失去「切換不用 reload」的優點，但 `nginx -s reload` 是 graceful 的（在 DAG 裡多一步 `docker exec` 而已），完全可接受。
+- 教訓：選技術時不能只看 happy path 的優雅度，要把實際運行環境（Windows + Docker Desktop）的 quirks 算進去。
+
+**目前限制（TODO）：**
+- `manual_retrain` DAG 只支援 BLUE→GREEN 單向切換（假設啟動時 active 為 BLUE）
+- 下一輪 retrain 要從 GREEN 切回 BLUE 需要偵測當前 active 並反向 swap，目前未實作
+- 短期 workaround：retrain 結束後手動把 nginx.conf 改回 `serve_blue:8000`、stop green、start blue
 
 **為什麼不需要 Graceful Draining：**
 - 此系統的所有 endpoint（`/recommend`、`/explain` 等）皆為短請求（< 1s）
-- 2s `sleep` 提供足夠的 in-flight grace period，不需要複雜的 connection draining 邏輯
+- 2s `sleep` 提供足夠的 in-flight grace period
+- Nginx reload 本身就會 graceful 等舊 worker 處理完連線才結束
 
 **Port 說明：**
-- 舊的 `8000`（直連 serve_blue）、`8001`（直連 serve_green）已移除
-- 外部統一透過 Traefik port `80` 存取
-- Traefik dashboard：port `8888`（避免與 Airflow `8080` 衝突）
+- 外部統一透過 Nginx port `80` 存取
+- 舊的 `8000`（直連 serve_blue）、`8001`（直連 serve_green）、`8888`（Traefik dashboard）已全部移除
 
 ### 3.5 Model 檔案命名
 **決策：** 統一使用 `best_model.pt`，retrain 前備份成 `best_model_prev.pt`。

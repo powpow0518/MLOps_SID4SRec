@@ -1,25 +1,20 @@
 services:
 
-  # ── Traefik (reverse proxy / Blue-Green traffic router) ───
-  # 所有外部流量經 port 80 進入，由 Traefik 根據 container label 決定路由
-  # Dashboard: http://localhost:8888
-  traefik:
-    image: traefik:v3.0
-    container_name: mlops_traefik
-    command:
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"   # 只有加 label 的 container 才被路由
-      - "--providers.docker.network=mlops_net"
-      - "--entrypoints.web.address=:80"
-      - "--api.dashboard=true"
-      - "--api.insecure=true"
-    ports:
-      - "80:80"       # API 入口（取代舊的 8000）
-      - "8888:8080"   # Traefik dashboard（避免與 Airflow 8080 衝突）
+  # ── Nginx (reverse proxy / Blue-Green traffic router) ─────
+  # 靜態 config + Docker 內建 DNS（127.0.0.11）解析 backend
+  # 不需要連 Docker daemon，避開 Docker Desktop on Windows 的 socket bridge bug
+  # Blue/Green 切換見 DECISIONS.md §3.4
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: mlops_nginx
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
     networks:
       - mlops_net
+    depends_on:
+      - serve_blue
 
   # ── Database ──────────────────────────────────────────────
   postgres:
@@ -66,14 +61,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.mlops-blue.rule=PathPrefix(`/`)"
-      - "traefik.http.routers.mlops-blue.entrypoints=web"
-      - "traefik.http.routers.mlops-blue.priority=1"
-      - "traefik.http.services.mlops-blue.loadbalancer.server.port=8000"
 
-  # GREEN：priority=100，啟動後立即搶佔 Traefik 路由（不需改任何設定）
+  # GREEN：retrain 時啟動，由 DAG 切換 nginx upstream 後接管流量
   serve_green:
     build:
       context: .
@@ -94,12 +83,6 @@ services:
         condition: service_healthy
     profiles:
       - green
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.mlops-green.rule=PathPrefix(`/`)"
-      - "traefik.http.routers.mlops-green.entrypoints=web"
-      - "traefik.http.routers.mlops-green.priority=100"
-      - "traefik.http.services.mlops-green.loadbalancer.server.port=8000"
 
   # ── Training ──────────────────────────────────────────────
   # 不常駐，由 Airflow 排程觸發（或手動 docker compose run train）

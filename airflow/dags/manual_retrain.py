@@ -3,11 +3,15 @@ DAG: manual_retrain
 觸發方式: 手動（Airflow UI 按 Trigger）
 功能: 完整 retrain → 驗證 → Blue-Green 切換
 
-Blue-Green 切換流程：
-  1. 訓練完成後啟動 serve_green（priority=100，Traefik 自動導流到 GREEN）
+Blue-Green 切換流程（Nginx 版，2026-04-07 從 Traefik 改）：
+  1. 訓練完成後啟動 serve_green（帶新 model）
   2. 內網直連 health check serve_green，確認新 model 載入正常
-  3. 停掉 serve_blue（GREEN 獨自服務，SHORT request 2s grace 足夠）
-  4. 最終確認：透過 Traefik 打 /health 確認整條路徑正常
+  3. Swap nginx upstream（host file: serve_blue:8000 → serve_green:8000）+ nginx -s reload
+  4. 停掉 serve_blue（短請求 < 1s，2s grace + nginx graceful reload 足夠）
+  5. 最終確認：透過 Nginx 打 /health 確認整條路徑正常
+
+注意：此 DAG 假設目前 active 為 BLUE，僅支援 BLUE→GREEN 單向切換。
+若要支援雙向（GREEN→BLUE 下一輪 retrain），需偵測當前 active 並反向 swap。
 """
 
 import time
@@ -19,8 +23,9 @@ from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 
 COMPOSE_DIR = "/opt/airflow/project"
-TRAEFIK_URL = "http://mlops_traefik:80"       # Traefik 入口（內網）
+NGINX_URL = "http://mlops_nginx:80"                   # Nginx 入口（內網）
 GREEN_INTERNAL_URL = "http://mlops_serve_green:8000"  # GREEN 內網直連（切流量前確認）
+NGINX_CONF_HOST_PATH = f"{COMPOSE_DIR}/docker/nginx.conf"  # Airflow 看得到的 host 路徑
 
 
 def _wait_healthy(url: str, label: str, attempts: int = 15, interval: int = 5):
@@ -42,9 +47,9 @@ def health_check_green():
     _wait_healthy(GREEN_INTERNAL_URL, "serve_green")
 
 
-def health_check_traefik():
-    """切換後確認整條路徑（Client → Traefik → GREEN）正常。"""
-    _wait_healthy(TRAEFIK_URL, "traefik→green")
+def health_check_nginx():
+    """切換後確認整條路徑（Client → Nginx → GREEN）正常。"""
+    _wait_healthy(NGINX_URL, "nginx→green")
 
 
 with DAG(
@@ -108,17 +113,29 @@ with DAG(
         python_callable=health_check_green,
     )
 
-    # GREEN 已通過 health check，Traefik priority=100 已搶佔路由
-    # 停掉 BLUE（短請求 < 1s，2s 自然 grace period 足夠）
+    # GREEN 已通過 health check → 把 Nginx upstream 從 BLUE 切換到 GREEN
+    # 注意：sed 修改的是 host 上的 docker/nginx.conf（bind mount，nginx container 立即看得到）
+    #       接著 nginx -s reload 會 graceful 重啟 worker（舊 worker 處理完連線才退出）
+    swap_nginx_upstream = BashOperator(
+        task_id="swap_nginx_upstream",
+        bash_command=(
+            f'grep -q "serve_blue:8000" {NGINX_CONF_HOST_PATH} || '
+            f'(echo "ERROR: nginx.conf 不在預期 BLUE 狀態，拒絕切換" && exit 1) && '
+            f'sed -i "s|serve_blue:8000|serve_green:8000|" {NGINX_CONF_HOST_PATH} && '
+            f'docker exec mlops_nginx nginx -s reload'
+        ),
+    )
+
+    # Nginx 已導流到 GREEN，停掉 BLUE（短請求 < 1s，2s grace 足夠）
     stop_blue = BashOperator(
         task_id="stop_blue",
         bash_command="sleep 2 && docker stop mlops_serve_blue",
     )
 
-    # 最終確認：透過 Traefik 打一次 /health，確認整條路徑正常
-    check_traefik = PythonOperator(
-        task_id="health_check_traefik",
-        python_callable=health_check_traefik,
+    # 最終確認：透過 Nginx 打一次 /health，確認整條路徑正常
+    check_nginx = PythonOperator(
+        task_id="health_check_nginx",
+        python_callable=health_check_nginx,
     )
 
     (
@@ -128,6 +145,7 @@ with DAG(
         >> generate_user_representations
         >> start_green
         >> check_green
+        >> swap_nginx_upstream
         >> stop_blue
-        >> check_traefik
+        >> check_nginx
     )
