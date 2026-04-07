@@ -316,7 +316,7 @@ def user_list(db: Session = Depends(get_db)):
 
 
 @app.get("/recommend", tags=["recommendation"])
-def recommend_from_db(user_id: int, top_k: int = 20, db: Session = Depends(get_db)):
+def recommend_from_db(user_id: int, db: Session = Depends(get_db)):
     """Fetch interaction history from DB, then run inference."""
     rows = db.execute(
         text("SELECT item_id FROM interaction WHERE user_id = :uid ORDER BY timestamp ASC"),
@@ -326,7 +326,7 @@ def recommend_from_db(user_id: int, top_k: int = 20, db: Session = Depends(get_d
         raise HTTPException(status_code=404, detail=f"No history found for user {user_id}")
 
     item_sequence = [r[0] for r in rows]
-    recommended, user_repr = _run_inference(item_sequence, top_k=top_k)
+    recommended, user_repr = _run_inference(item_sequence)
     _save_recommendation_log(db, user_id, recommended)
     _upsert_user_representation(db, user_id, user_repr)
     db.commit()
