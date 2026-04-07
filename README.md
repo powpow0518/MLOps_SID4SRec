@@ -21,25 +21,28 @@ This system serves personalized item recommendations using **SID4SRec** — a SA
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Docker Compose                      │
-│                                                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  │
-│  │ serve    │  │ train    │  │ airflow  │  │grafana │  │
-│  │ (port    │  │ (profile │  │(sched +  │  │(port   │  │
-│  │  8000)   │  │  train)  │  │ websvr)  │  │ 3000)  │  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘  │
-│       │             │             │             │       │
-│       └─────────────┴──────┬──────┘             │       │
-│                            │        ┌───────────┘       │
-│                 ┌──────────▼────────▼──────┐            │
-│                 │  PostgreSQL + pgvector    │            │
-│                 │  (pg16, port 5432)        │            │
-│                 └───────────────────────────┘            │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                       Docker Compose                         │
+│                                                              │
+│  Client → Traefik(:80) ──priority=100──▶ serve_green        │
+│                      └──priority=1─────▶ serve_blue         │
+│                                                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐      │
+│  │ traefik  │  │ train    │  │ airflow  │  │grafana │      │
+│  │ (port 80)│  │ (profile │  │(sched +  │  │(port   │      │
+│  │ dash:8888│  │  train)  │  │ websvr)  │  │ 3000)  │      │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘      │
+│       │             │             │             │           │
+│       └─────────────┴──────┬──────┘             │           │
+│                            │        ┌───────────┘           │
+│                 ┌──────────▼────────▼──────┐                │
+│                 │  PostgreSQL + pgvector    │                │
+│                 │  (pg16, port 5432)        │                │
+│                 └───────────────────────────┘                │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-- **Serving**: FastAPI, model loaded at startup, Blue-Green deployment ready
+- **Serving**: FastAPI, model loaded at startup, Blue-Green deployment via Traefik router priority
 - **Training**: PyTorch 2.0 + CUDA 11.7, triggered via Airflow or manually
 - **Orchestration**: Apache Airflow with two DAGs
 - **Storage**: PostgreSQL for interactions/metadata + pgvector for item embeddings (192-dim) and user representations (192-dim)
@@ -181,25 +184,28 @@ This is an active learning project. Current progress:
 ### 系統架構
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Docker Compose                      │
-│                                                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  │
-│  │ serve    │  │ train    │  │ airflow  │  │grafana │  │
-│  │ (port    │  │ (profile │  │(排程 +   │  │(port   │  │
-│  │  8000)   │  │  train)  │  │ websvr)  │  │ 3000)  │  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘  │
-│       │             │             │             │       │
-│       └─────────────┴──────┬──────┘             │       │
-│                            │        ┌───────────┘       │
-│                 ┌──────────▼────────▼──────┐            │
-│                 │  PostgreSQL + pgvector    │            │
-│                 │  (pg16, port 5432)        │            │
-│                 └───────────────────────────┘            │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                       Docker Compose                         │
+│                                                              │
+│  Client → Traefik(:80) ──priority=100──▶ serve_green        │
+│                      └──priority=1─────▶ serve_blue         │
+│                                                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐      │
+│  │ traefik  │  │ train    │  │ airflow  │  │grafana │      │
+│  │ (port 80)│  │ (profile │  │(排程 +   │  │(port   │      │
+│  │ dash:8888│  │  train)  │  │ websvr)  │  │ 3000)  │      │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └───┬────┘      │
+│       │             │             │             │           │
+│       └─────────────┴──────┬──────┘             │           │
+│                            │        ┌───────────┘           │
+│                 ┌──────────▼────────▼──────┐                │
+│                 │  PostgreSQL + pgvector    │                │
+│                 │  (pg16, port 5432)        │                │
+│                 └───────────────────────────┘                │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-- **Serving**：FastAPI，啟動時載入模型常駐記憶體，支援 Blue-Green Deployment
+- **Serving**：FastAPI，啟動時載入模型常駐記憶體；Traefik 透過 container label priority 實現 Blue-Green 零 downtime 切換
 - **Training**：PyTorch 2.0 + CUDA 11.7，由 Airflow 觸發或手動執行
 - **Orchestration**：Apache Airflow，管理兩條 DAG
 - **Storage**：PostgreSQL 存放互動紀錄與商品中繼資料；pgvector 存放 192-dim item embedding 與 user representation

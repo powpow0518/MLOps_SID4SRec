@@ -131,14 +131,34 @@ Model（items_emb()：item + category + brand embedding 串接）
 - 避免 `docker compose up` 時意外啟動 train，浪費資源
 - 由 Airflow 透過 `docker compose --profile train run` 觸發
 
-### 3.4 Blue-Green Deployment
-**決策：** serve_blue（port 8000）常駐，serve_green（port 8001）更新時才啟動。
+### 3.4 Blue-Green Deployment（Traefik + Container Priority）
+**決策：** Traefik 作為 reverse proxy 坐在 serve_blue / serve_green 前面，透過 router priority 實現零 downtime 切換。
 
-**原因：**
-- 更新 model 時先跑 green，確認 health check 正常再切流量
-- 減少 downtime 風險
+**架構：**
+```
+Client → Traefik(:80) → serve_blue  (priority=1,  預設 active)
+                      → serve_green (priority=100, retrain 時啟動)
+```
 
-**目前實作：** retrain 後直接重啟 serve_blue（因為只更新 model weights，不換 code），Blue-Green 保留供未來 code 更新時使用。
+**切換流程（manual_retrain DAG 自動執行）：**
+1. 訓練完成後 `docker compose up serve_green`（GREEN 帶新 model 啟動）
+2. Traefik 感知 GREEN，priority=100 > 1，立即搶佔路由
+3. 內網直連 `http://mlops_serve_green:8000/health` 確認 GREEN 正常
+4. `sleep 2 && docker stop mlops_serve_blue`（短請求 < 1s，2s 足夠讓 in-flight 完成）
+5. 透過 Traefik 打 `/health` 確認整條路徑正常
+
+**為什麼選 Traefik 不選 Nginx：**
+- Traefik 掛 Docker socket，透過 container label 動態感知 backend，切換不需改設定檔或 reload
+- Nginx 切換需要修改 upstream 設定並執行 `nginx -s reload`，在 DAG 自動化中更繁瑣
+
+**為什麼不需要 Graceful Draining：**
+- 此系統的所有 endpoint（`/recommend`、`/explain` 等）皆為短請求（< 1s）
+- 2s `sleep` 提供足夠的 in-flight grace period，不需要複雜的 connection draining 邏輯
+
+**Port 說明：**
+- 舊的 `8000`（直連 serve_blue）、`8001`（直連 serve_green）已移除
+- 外部統一透過 Traefik port `80` 存取
+- Traefik dashboard：port `8888`（避免與 Airflow `8080` 衝突）
 
 ### 3.5 Model 檔案命名
 **決策：** 統一使用 `best_model.pt`，retrain 前備份成 `best_model_prev.pt`。
