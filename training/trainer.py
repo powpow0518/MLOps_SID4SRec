@@ -14,7 +14,7 @@ class Trainer:
 
         self.args = args
         self.device = device
-        self.start_epoch = 0    # define the start epoch for keepon trainingzhonss
+        self.start_epoch = 0
 
         self.loss_func = torch.nn.BCEWithLogitsLoss()
         self.generator = generator

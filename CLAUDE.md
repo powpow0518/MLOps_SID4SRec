@@ -77,7 +77,13 @@ For the following topics, **never output a full solution or design directly**. I
 - Orchestration: Apache Airflow（port 8080）
 - Model: SID4SRec（SASRec + Diffusion + Contrastive Learning）
 - Database: PostgreSQL 16 + pgvector（HNSW index，192-dim embeddings）
-- RAG: Two-step Google Gemini API（structured → summary），整合進 FastAPI
+- RAG: Two-step Gemini 2.5 Flash API（structured → summary），整合進 FastAPI
 - Analytics: Grafana（port 3000，直連 PostgreSQL，provisioning 自動載入 dashboard）
 - **Infrastructure: Docker / Docker Compose（所有服務皆以容器化方式運行）**
 - Recommend top-k: 20（HR@5=0.0774，HR@20=0.1533）
+
+## Code Conventions
+
+- **ID 產生**：`POST /user`、`POST /item` 一律用 `nextval('xxx_seq')`，絕對不用 `MAX(id) + 1`（race condition）
+- **Gemini model**：`models/gemini-2.5-flash`（已棄用 gemma-4-31b-it）
+- **環境變數**：所有機密值從 `.env` 讀取，`.env.example` 為範本，任何新的環境變數都要同步加進 `.env.example`

@@ -122,13 +122,17 @@ See [DECISIONS.md](./DECISIONS.md) for full rationale on every design choice.
 
 ```bash
 # Copy and configure environment
-cp .env.example .env  # edit MLOPS_PROJECT_DIR to your absolute path
+cp .env.example .env  # edit MLOPS_PROJECT_DIR and GEMINI_API_KEY
 
 # Start all services (except train)
 docker compose up -d
 
 # Run data ingestion
 docker compose run --rm train python -m scripts.ingest_beauty
+
+# Sync DB sequences (required after ingestion — ensures POST /user and POST /item
+# generate non-conflicting IDs via nextval rather than MAX+1)
+docker compose exec postgres psql -U mlops -d mlops -f /dev/stdin < scripts/sync_sequences.sql
 
 # Generate item embeddings
 docker compose run --rm train python -m scripts.generate_embeddings
@@ -278,13 +282,16 @@ This is an active learning project. Current progress:
 
 ```bash
 # 複製並設定環境變數
-cp .env.example .env  # 修改 MLOPS_PROJECT_DIR 為你的絕對路徑
+cp .env.example .env  # 修改 MLOPS_PROJECT_DIR 與 GEMINI_API_KEY
 
 # 啟動所有服務（不含 train）
 docker compose up -d
 
 # 執行資料注入
 docker compose run --rm train python -m scripts.ingest_beauty
+
+# 同步 DB sequence（注入後必須執行一次——確保 POST /user、POST /item 透過 nextval 產生不衝突的 ID）
+docker compose exec postgres psql -U mlops -d mlops -f /dev/stdin < scripts/sync_sequences.sql
 
 # 產生 item embedding
 docker compose run --rm train python -m scripts.generate_embeddings

@@ -348,8 +348,8 @@ def create_user(req: CreateUserRequest, db: Session = Depends(get_db)):
         if not exists:
             raise HTTPException(status_code=404, detail=f"Item {item_id} does not exist")
 
-    # Auto-generate user_id
-    row = db.execute(text('SELECT COALESCE(MAX(user_id), 0) + 1 FROM "user"')).fetchone()
+    # Auto-generate user_id — nextval is atomic, safe for concurrent requests
+    row = db.execute(text("SELECT nextval('user_id_seq')")).fetchone()
     new_user_id = row[0]
 
     db.execute(text('INSERT INTO "user" (user_id) VALUES (:uid)'), {"uid": new_user_id})
@@ -380,7 +380,7 @@ def create_item(req: CreateItemRequest, db: Session = Depends(get_db)):
         category_id1 = row[0]
     else:
         r = db.execute(
-            text("INSERT INTO category (category_id, category) VALUES ((SELECT COALESCE(MAX(category_id),0)+1 FROM category), :name) RETURNING category_id"),
+            text("INSERT INTO category (category_id, category) VALUES (nextval('category_id_seq'), :name) RETURNING category_id"),
             {"name": req.category1},
         ).fetchone()
         category_id1 = r[0]
@@ -396,7 +396,7 @@ def create_item(req: CreateItemRequest, db: Session = Depends(get_db)):
             category_id2 = row[0]
         else:
             r = db.execute(
-                text("INSERT INTO category (category_id, category) VALUES ((SELECT COALESCE(MAX(category_id),0)+1 FROM category), :name) RETURNING category_id"),
+                text("INSERT INTO category (category_id, category) VALUES (nextval('category_id_seq'), :name) RETURNING category_id"),
                 {"name": req.category2},
             ).fetchone()
             category_id2 = r[0]
@@ -410,7 +410,7 @@ def create_item(req: CreateItemRequest, db: Session = Depends(get_db)):
         brand_id = row[0]
     else:
         r = db.execute(
-            text("INSERT INTO brand (brand_id, brand_name) VALUES ((SELECT COALESCE(MAX(brand_id),0)+1 FROM brand), :name) RETURNING brand_id"),
+            text("INSERT INTO brand (brand_id, brand_name) VALUES (nextval('brand_id_seq'), :name) RETURNING brand_id"),
             {"name": req.brand},
         ).fetchone()
         brand_id = r[0]
@@ -419,7 +419,7 @@ def create_item(req: CreateItemRequest, db: Session = Depends(get_db)):
     r = db.execute(
         text("""
             INSERT INTO item (item_id, category_id1, category_id2, brand_id, price)
-            VALUES ((SELECT COALESCE(MAX(item_id),0)+1 FROM item), :c1, :c2, :bid, :price)
+            VALUES (nextval('item_id_seq'), :c1, :c2, :bid, :price)
             RETURNING item_id
         """),
         {"c1": category_id1, "c2": category_id2, "bid": brand_id, "price": req.price},

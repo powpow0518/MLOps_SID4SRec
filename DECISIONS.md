@@ -176,7 +176,7 @@ Model（items_emb()：item + category + brand embedding 串接）
 **POST /user 設計：**
 - Input：`item_sequence: List[int]`（不傳 user_id，由 DB 自動產生）
 - 驗證每個 item_id 存在於 `item` table，否則 404
-- `user_id` 用 `SELECT MAX(user_id) + 1` 自動產生（接在現有最大值之後）
+- `user_id` 用 `nextval('user_id_seq')` 產生（atomic，無競態條件）
 - 寫入 `user` + `interaction` table
 - 回傳新 `user_id`（22364 為第一個新 user）
 
@@ -192,7 +192,7 @@ Model（items_emb()：item + category + brand embedding 串接）
 **設計：**
 - Input：`category1: str`、`category2: str（optional）`、`brand: str`、`price: float`
 - category / brand 用名稱查詢，不存在則自動建立（UPSERT 邏輯）
-- `item_id` 用 `SELECT MAX(item_id) + 1` 自動產生
+- `item_id` 用 `nextval('item_id_seq')` 產生（atomic，無競態條件）
 - 回傳新 `item_id`
 
 **原因：** 新用戶 onboarding 時若要帶入系統外的商品，需要先有辦法建立 item，再建立 user。
@@ -210,6 +210,18 @@ Model（items_emb()：item + category + brand embedding 串接）
 **決策：** 不設計 explicit feedback（如評分），只記錄行為（點擊/購買）。
 
 **原因：** Amazon Beauty 資料集本身只有 implicit feedback，模型設計也是針對 implicit。
+
+### 4.5 Atomic ID 產生策略（PostgreSQL Sequences）
+**決策：** `POST /user`、`POST /item` 使用 PostgreSQL sequence（`nextval()`）產生 ID，而非 `SELECT MAX(id) + 1`。
+
+**原因：**
+- `MAX + 1` 是典型競態條件（race condition）：兩個並發請求同時讀到相同 MAX，接著 INSERT 時其中一個會因 PRIMARY KEY 衝突而失敗
+- `nextval()` 是 DB-level atomic 操作，天然保證唯一性，不需要額外 lock
+
+**實作細節：**
+- `docker/init.sql` 建立四個 sequence：`user_id_seq`、`category_id_seq`、`brand_id_seq`、`item_id_seq`
+- 大量注入資料後需執行 `scripts/sync_sequences.sql`，把各 sequence 對齊 `MAX(id)`，避免與已存在的 ID 衝突
+- `ingest_beauty.py` 結尾自動執行同步，不需手動呼叫
 
 ---
 

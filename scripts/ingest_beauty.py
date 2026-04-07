@@ -104,6 +104,15 @@ def ingest(dat):
     )
 
     conn.commit()
+
+    # Sync sequences so POST /user and POST /item generate non-conflicting IDs
+    print("Syncing sequences...")
+    cur.execute("SELECT setval('user_id_seq',     (SELECT MAX(user_id)     FROM \"user\"))")
+    cur.execute("SELECT setval('category_id_seq', (SELECT MAX(category_id) FROM category))")
+    cur.execute("SELECT setval('brand_id_seq',    (SELECT MAX(brand_id)    FROM brand))")
+    cur.execute("SELECT setval('item_id_seq',     (SELECT MAX(item_id)     FROM item))")
+    conn.commit()
+
     cur.close()
     conn.close()
     print(f"Done.")

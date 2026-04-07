@@ -96,6 +96,15 @@ CREATE TABLE IF NOT EXISTS recommendation_feedback_log (
     hit         BOOLEAN   NOT NULL
 );
 
+-- ── Sequences (used by serving API for race-condition-safe ID generation) ──
+-- After bulk ingestion, run scripts/sync_sequences.sql to align these with
+-- the current MAX(id) values.
+
+CREATE SEQUENCE IF NOT EXISTS user_id_seq;
+CREATE SEQUENCE IF NOT EXISTS category_id_seq;
+CREATE SEQUENCE IF NOT EXISTS brand_id_seq;
+CREATE SEQUENCE IF NOT EXISTS item_id_seq;
+
 -- ── Indexes ───────────────────────────────────────────────────────────────────
 
 CREATE INDEX IF NOT EXISTS idx_interaction_user_id  ON interaction(user_id);
