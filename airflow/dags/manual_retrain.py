@@ -3,7 +3,7 @@ DAG: manual_retrain
 觸發方式: 手動（Airflow UI 按 Trigger）
 功能: 完整 retrain → 驗證 → Blue-Green 切換
 
-Blue-Green 切換流程（Nginx 版，2026-04-07 從 Traefik 改）：
+Blue-Green 切換流程（Nginx 版）：
   1. 訓練完成後啟動 serve_green（帶新 model）
   2. 內網直連 health check serve_green，確認新 model 載入正常
   3. Swap nginx upstream（host file: serve_blue:8000 → serve_green:8000）+ nginx -s reload

@@ -2,9 +2,6 @@ import enum
 import math
 import numpy as np
 import torch as th
-import sys
-sys.path.append('.')
-
 import torch.nn.functional as F
 from torch.nn import Linear
 

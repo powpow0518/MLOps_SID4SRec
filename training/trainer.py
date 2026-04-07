@@ -27,7 +27,6 @@ class Trainer:
         
         self._create_model()
         self._set_optimizer()
-        # self._set_stopper()
 
 
     def _create_model(self):
@@ -51,9 +50,8 @@ class Trainer:
     
     def _set_optimizer(self):
 
-        self.optimizer = torch.optim.Adam(self.model.parameters(),  
+        self.optimizer = torch.optim.Adam(self.model.parameters(),
                                         lr=self.args.learning_rate,
-                                        # betas=(0.9, 0.999),
                                         weight_decay=self.args.weight_decay)
         
 
@@ -114,8 +112,6 @@ class Trainer:
             
             sas_cl_loss = self.model.calculate_cl_loss(aug_seq1, aug_seq2, aug_seq1_emb, aug_seq2_emb) 
             loss = sas_rec_loss + self.args.gamma * diff_mse_loss + self.args.beta * diff_nll_loss + self.args.alpha * sas_cl_loss + self.args.lambda_cl * item_cl_loss
-            # loss = sas_rec_loss + self.args.gamma * diff_mse_loss + self.args.beta * diff_nll_loss + self.args.alpha * sas_cl_loss 
-            # loss = sas_rec_loss + self.args.lambda_cl * item_cl_loss
             loss.backward()
             self.optimizer.step()
             
@@ -129,9 +125,6 @@ class Trainer:
 
             train_end = time.time()
             train_time.append(train_end-train_start)
-        # if epoch %10==0:
-        #     print("aug_seq1", aug_seq1[masked_indices0])
-        #     print("aug_seq2", aug_seq2[masked_indices0])
         print(f' epoch {epoch}: diff_nll_loss {tr_diff_nll_loss:.4f}', end='   ')
         print(f'diff_mse_loss {tr_diff_mse_loss:.4f}', end='   ')
         print(f'sas_rec_loss {tr_sas_rec_loss:.4f}', end='   ')
@@ -186,8 +179,6 @@ class Trainer:
             bs_scores = self.model.full_sort_predict(input_ids).detach().cpu()
             
             batch_user_index = user_ids.cpu().numpy()
-            # print("bs_scores", bs_scores.shape)
-            # print("valid_rating_matrix", (self.generator.test_rating_matrix[batch_user_index].toarray() > 0).shape)
             if not test:
                 bs_scores[self.args.valid_rating_matrix[batch_user_index].toarray() > 0] = -100
             else:

@@ -494,3 +494,33 @@ recommendation_feedback_log(id, user_id, item_id, timestamp, hit)
 - 由 `POST /feedback` 觸發寫入
 - category / brand 查詢時動態 JOIN `item` table
 - user 活躍度查詢時動態 JOIN `interaction` table
+
+---
+
+## 9. Testing & CI
+
+### 9.1 整合測試策略
+**決策：** 以 FastAPI TestClient + 真實 PostgreSQL fixture 做整合測試為主，不 mock DB。
+
+**原因：**
+- 此專案核心邏輯高度依賴 DB schema（FK、sequence、pgvector HNSW index）
+- Mock DB 容易讓測試通過但 production 失敗（mock/prod 分歧是常見的 regression 來源）
+- `conftest.py` 的 session-scoped fixture 確保每次測試在獨立的測試資料下執行，結束後自動清理
+
+**覆蓋範圍：**
+- `tests/test_api.py`：47 個 API 整合測試（42 pass / 3 xfail / 2 LLM skip）
+- `tests/test_rag_explain.py`：prompt builder 單元測試（mock Gemini，不需要真實 API key）
+- xfail 釘住已知的 validation gap（`/feedback`、`/interaction` 尚未驗證 user/item 存在性）
+
+### 9.2 GitHub Actions CI Pipeline
+**決策：** `.github/workflows/ci.yml` 涵蓋 lint + pytest + docker build，在 PR 和 push to main 時觸發。
+
+**原因：**
+- 「production-level ML system」沒有 CI 是自我矛盾的
+- pytest 整合測試需要起 PostgreSQL service，GitHub Actions 的 service container 原生支援
+- Docker build check 確保 image 在 CI 環境可建置，避免「本機可以跑 CI 炸」
+
+**Pipeline 步驟：**
+1. `ruff check`（lint）
+2. `pytest tests/`（含 PostgreSQL service container，跑完整整合測試）
+3. `docker build`（serve image + train image）
