@@ -1,8 +1,14 @@
 import argparse
+import os
 from typing import List
 
 def get_config():
     parser = argparse.ArgumentParser()
+    # ************Data Source*******************
+    parser.add_argument('--use_db', action='store_true',
+                        help='Load training data from PostgreSQL instead of pickle files')
+    parser.add_argument('--db_url', type=str, default=os.environ.get('DATABASE_URL', ''),
+                        help='PostgreSQL connection URL (used when --use_db is set)')
     #************SASRec*******************
     parser.add_argument('--gpu_id', type=int, default=0, help='gpu')
     parser.add_argument("--dataset", type=str, default="Beauty", choices=['Beauty', 'Sports_and_Outdoors', 'Home_and_Kitchen', 'Toys_and_Games'], help="Choose the dataset")
@@ -14,7 +20,7 @@ def get_config():
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--filter_num', type=int, default=5, help='filter_num')
     parser.add_argument('--train_batch_size', type=int, default=256, help='Batch size for training')
-    parser.add_argument('--test_batch_size', type=int, default=512, help='Batch size for testing')
+    parser.add_argument('--test_batch_size', type=int, default=128, help='Batch size for testing')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=0, help='Weight decay')
     
@@ -56,9 +62,10 @@ def get_config():
     parser.add_argument('--mlm_probability_train', type=float, default=0.1, help='mlm_probability for train')
     parser.add_argument('--mlm_probability', type=float, default=0.1, help='mlm_probability')
     
-    parser.add_argument('--psi_seq', type=float, default=0.1, help='Instance weighting threshold for sequence constrastive learning')
-    parser.add_argument('--psi_item', type=float, default=0.1, help='Instance weighting threshold for item constrastive learning')
-    parser.add_argument('--lambda_cl', type=float, default=0.1, help='Weight for item contrastive learning loss')
+    # Beauty best hyperparameters (from training/README.md)
+    parser.add_argument('--psi_seq', type=float, default=0.7, help='Instance weighting threshold for sequence constrastive learning')
+    parser.add_argument('--psi_item', type=float, default=0.7, help='Instance weighting threshold for item constrastive learning')
+    parser.add_argument('--lambda_cl', type=float, default=0.8, help='Weight for item contrastive learning loss')
     parser.add_argument('--item_temp', type=float, default=0.1, help='temperature for item contrastive')
 
     parser.add_argument("--batch_size", type=int, default=256)

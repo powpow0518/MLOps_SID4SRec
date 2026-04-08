@@ -176,27 +176,26 @@ class Trainer:
             logger.info("********** Running test **********")
             prog_iter = tqdm(self.test_dataloader, leave=False, desc='test')
 
-        scores = []
+        # per-batch topk(20) 以避免把整個 (num_users, num_items) scores matrix 保留在記憶體
+        pred_list = []
         labels = []
         for batch in prog_iter:
             user_ids, input_ids, label_items = \
                                                 batch["user_id"].to(self.device), \
                                                 batch["input_ids"].to(self.device), \
                                                 batch["answer"].to(self.device), \
-                                                                                                                      
+
             bs_scores = self.model.full_sort_predict(input_ids).detach().cpu()
-            
+
             batch_user_index = user_ids.cpu().numpy()
             if not test:
                 bs_scores[self.args.valid_rating_matrix[batch_user_index].toarray() > 0] = -100
             else:
                 bs_scores[self.args.test_rating_matrix[batch_user_index].toarray() > 0] = -100
-            bs_labels = label_items.reshape(-1,1).cpu()
-            scores.append(bs_scores)
-            labels.append(bs_labels)
-            
-        scores = torch.cat(scores, axis=0).numpy()
-        partitioned_indices = np.argpartition(-scores, 20, axis=1)[:, :20]
-        pred_list = partitioned_indices[np.arange(scores.shape[0])[:, None], np.argsort(-scores[np.arange(scores.shape[0])[:, None], partitioned_indices], axis=1)].tolist()
-        labels = torch.cat(labels, axis=0).numpy().tolist()
+
+            # 只保留 top-20，排序後轉 list，釋放 bs_scores
+            top_scores, top_indices = torch.topk(bs_scores, 20, dim=1)  # 已依分數降冪
+            pred_list.extend(top_indices.tolist())
+            labels.extend(label_items.reshape(-1, 1).cpu().tolist())
+
         return get_full_sort_score(epoch, labels, pred_list)
