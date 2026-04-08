@@ -95,8 +95,8 @@ def main():
                 repr_vectors = model.get_user_representation(input_tensor)  # [B, 192]
                 scores_batch = torch.matmul(repr_vectors, items_emb.transpose(0, 1))  # [B, num_items]
 
-                for j, (user_id, repr_vec, scores, seq) in enumerate(
-                    zip(user_ids, repr_vectors, scores_batch, raw_seqs)
+                for _j, (user_id, repr_vec, scores, seq) in enumerate(
+                    zip(user_ids, repr_vectors, scores_batch, raw_seqs, strict=True)
                 ):
                     # Mask seen items
                     for item_id in seq:

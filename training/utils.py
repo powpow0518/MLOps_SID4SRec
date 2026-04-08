@@ -1,10 +1,13 @@
-import math 
-import torch 
+import logging
+import math
+import torch
 import numpy as np
 from scipy.sparse import csr_matrix
 import random
 import torch.nn as nn
 import os
+
+logger = logging.getLogger(__name__)
 
 
 def set_seed(seed):
@@ -61,14 +64,14 @@ def get_full_sort_score(epoch, answers, pred_list):
             "HIT@10": '{:.4f}'.format(recall[1]), "NDCG@10": '{:.4f}'.format(ndcg[1]),
             "HIT@20": '{:.4f}'.format(recall[3]), "NDCG@20": '{:.4f}'.format(ndcg[3])
         }
-        print(post_fix)
+        logger.info("eval metrics: %s", post_fix)
 
         return [recall[0], ndcg[0], recall[1], ndcg[1], recall[3], ndcg[3]], str(post_fix)
         
 def check_path(path):
     if not os.path.exists(path):
         os.makedirs(path)
-        print(f'{path} created')     
+        logger.info("%s created", path)
         
 class BPRLoss(nn.Module):
     """BPRLoss, based on Bayesian Personalized Ranking
@@ -233,7 +236,7 @@ class EarlyStopping:
             self.save_checkpoint(score, model)
         elif self.compare(score):
             self.counter += 1
-            print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
+            logger.info("EarlyStopping counter: %d out of %d", self.counter, self.patience)
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
@@ -245,7 +248,7 @@ class EarlyStopping:
         """Saves model when validation loss decrease."""
         if self.verbose:
             # ({self.score_min:.6f} --> {score:.6f}) # 这里如果是一个值的话输出才不会有问题
-            print(f"Validation score increased.  Saving model ...")
+            logger.info("Validation score increased. Saving model ...")
         torch.save(model.state_dict(), self.checkpoint_path)
         self.score_min = score
         

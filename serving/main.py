@@ -1,22 +1,22 @@
 import os
 import pickle
 import random
-import torch
-from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from typing import List, Literal, Optional
+from datetime import datetime, timezone
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Depends
+import torch
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import Session, sessionmaker
 
-from training.sid4srec import SID4SRec
 from rag.explain import explain_user
-from serving.dependencies.user import get_user_or_404
 from serving.dependencies.item import get_item_or_404
+from serving.dependencies.user import get_user_or_404
+from training.sid4srec import SID4SRec
 
 # ── Global model state ───────────────────────────────────────────────────────
 _model: SID4SRec = None
@@ -227,12 +227,12 @@ def custom_docs():
 
 # ── Request schemas ───────────────────────────────────────────────────────────
 class CreateUserRequest(BaseModel):
-    item_sequence: List[int]
+    item_sequence: list[int]
 
 
 class CreateItemRequest(BaseModel):
     category1: str
-    category2: Optional[str] = None
+    category2: str | None = None
     brand: str
     price: float = Field(ge=0)
 
@@ -297,7 +297,7 @@ def _build_cold_start_data(db: Session):
         in_vocab_emb = _model.items_emb()  # [item_size, emb_dim]
 
     substitute_map: dict = {}
-    cold_item_ids: List[int] = []
+    cold_item_ids: list[int] = []
     cold_emb_list = []
 
     for cold_id, cold_cat, cold_brand in rows:
@@ -322,11 +322,11 @@ def _build_cold_start_data(db: Session):
 
 # ── Inference helper ──────────────────────────────────────────────────────────
 def _run_inference(
-    item_sequence: List[int],
+    item_sequence: list[int],
     top_k: int = 20,
-    substitute_map: Optional[dict] = None,
-    cold_item_ids: Optional[List[int]] = None,
-    cold_embeddings: Optional[torch.Tensor] = None,
+    substitute_map: dict | None = None,
+    cold_item_ids: list[int] | None = None,
+    cold_embeddings: torch.Tensor | None = None,
 ):
     """Run inference and return (top_k item ids, user representation as list).
 
@@ -389,7 +389,7 @@ def _run_inference(
     return top_items, user_repr[0].cpu().tolist()
 
 
-def _upsert_user_representation(db: Session, user_id: int, representation: List[float]):
+def _upsert_user_representation(db: Session, user_id: int, representation: list[float]):
     if _model_version is None:
         return
     vector_str = "[" + ",".join(str(v) for v in representation) + "]"
@@ -405,7 +405,7 @@ def _upsert_user_representation(db: Session, user_id: int, representation: List[
     )
 
 
-def _save_recommendation_log(db: Session, user_id: int, items: List[int]):
+def _save_recommendation_log(db: Session, user_id: int, items: list[int]):
     # Convert Python list to PostgreSQL array literal e.g. "{1,2,3}"
     array_literal = "{" + ",".join(str(i) for i in items) + "}"
     db.execute(

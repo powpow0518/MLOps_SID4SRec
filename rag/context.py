@@ -7,7 +7,6 @@ RagContext = 目標 user + 相似 users + 推薦 items。
 
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -29,16 +28,16 @@ class ItemAttrs:
 @dataclass
 class UserContext:
     user_id: int
-    recent_items: List[ItemAttrs] = field(default_factory=list)
-    top_categories: List[Tuple[str, int]] = field(default_factory=list)
-    top_brands: List[Tuple[str, int]] = field(default_factory=list)
+    recent_items: list[ItemAttrs] = field(default_factory=list)
+    top_categories: list[tuple[str, int]] = field(default_factory=list)
+    top_brands: list[tuple[str, int]] = field(default_factory=list)
 
 
 @dataclass
 class RagContext:
     target_user: UserContext
-    similar_users: List[UserContext]
-    recommended_items: List[ItemAttrs]
+    similar_users: list[UserContext]
+    recommended_items: list[ItemAttrs]
 
 
 # ── DB queries ───────────────────────────────────────────────────────────────
@@ -52,7 +51,7 @@ def has_user_representation(db: Session, user_id: int) -> bool:
     return row is not None
 
 
-def get_latest_recommendations(db: Session, user_id: int) -> List[int]:
+def get_latest_recommendations(db: Session, user_id: int) -> list[int]:
     row = db.execute(
         text(
             "SELECT recommended_items FROM recommendation_log "
@@ -68,7 +67,7 @@ def find_similar_users(
     user_id: int,
     top_k: int = SIMILAR_USER_TOP_K,
     min_sim: float = SIMILAR_USER_MIN_SIM,
-) -> List[int]:
+) -> list[int]:
     """HNSW 向量搜尋：cosine similarity ≥ min_sim 的 top_k 個 user（不含自己）。
 
     pgvector 用 <=> 算 cosine distance（= 1 - cosine_similarity）。
@@ -102,7 +101,7 @@ def _row_to_item(row) -> ItemAttrs:
     )
 
 
-def get_item_attrs(db: Session, item_ids: List[int]) -> List[ItemAttrs]:
+def get_item_attrs(db: Session, item_ids: list[int]) -> list[ItemAttrs]:
     """取得指定 item_ids 的屬性，保留輸入順序。"""
     if not item_ids:
         return []
@@ -156,7 +155,7 @@ def get_user_context(db: Session, user_id: int) -> UserContext:
     )
 
 
-def build_rag_context(db: Session, user_id: int) -> Optional[RagContext]:
+def build_rag_context(db: Session, user_id: int) -> RagContext | None:
     """主入口：組完整的 RagContext。若 user_representation 不存在則回 None。"""
     if not has_user_representation(db, user_id):
         return None

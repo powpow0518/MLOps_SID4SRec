@@ -14,7 +14,6 @@ import pickle
 
 import numpy as np
 import psycopg2
-from psycopg2.extras import execute_values
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 DATA_FILE = os.getenv("DATA_FILE", "/app/data/raw/Beauty_all_multi_word.dat")

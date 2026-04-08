@@ -6,13 +6,12 @@ PostgreSQL container (localhost:5432). Run `docker compose up -d` first.
 """
 
 import os
-from typing import Iterator, List
+from collections.abc import Iterator
 
 import pytest
 import requests
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
-
 
 BASE_URL = os.getenv("MLOPS_TEST_BASE_URL", "http://localhost")
 DATABASE_URL = os.getenv(

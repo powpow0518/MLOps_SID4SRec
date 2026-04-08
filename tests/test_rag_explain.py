@@ -2,16 +2,14 @@
 Tests for rag/explain.py — pure formatting functions, no DB or LLM required.
 """
 
-import pytest
+from rag.context import ItemAttrs, RagContext, UserContext
 from rag.explain import (
     FALLBACK_TEXT,
     _format_items,
     _format_top,
-    build_summary_prompt,
     build_structured_prompt,
+    build_summary_prompt,
 )
-from rag.context import ItemAttrs, RagContext, UserContext
-
 
 # ── _format_items ─────────────────────────────────────────────────────────────
 

@@ -1,8 +1,11 @@
+import logging
 import time
 import functools
 import torch
 import numpy as np
 from tqdm import tqdm, trange
+
+logger = logging.getLogger(__name__)
 from .sid4srec import SID4SRec
 from .cadirec_diffusion import SpacedDiffusion, space_timesteps
 from .utils import get_full_sort_score, EarlyStopping, linear
@@ -125,16 +128,21 @@ class Trainer:
 
             train_end = time.time()
             train_time.append(train_end-train_start)
-        print(f' epoch {epoch}: diff_nll_loss {tr_diff_nll_loss:.4f}', end='   ')
-        print(f'diff_mse_loss {tr_diff_mse_loss:.4f}', end='   ')
-        print(f'sas_rec_loss {tr_sas_rec_loss:.4f}', end='   ')
-        print(f'sas_cl_loss {tr_sas_cl_loss:.4f}', end='   ')
-        print(f'item_cl_loss {tr_item_cl_loss:.4f}', end='   ')
-        print(f'total_loss {tr_loss:.4f}')
+        logger.info(
+            "epoch %d | diff_nll_loss=%.4f diff_mse_loss=%.4f sas_rec_loss=%.4f "
+            "sas_cl_loss=%.4f item_cl_loss=%.4f total_loss=%.4f",
+            epoch,
+            tr_diff_nll_loss,
+            tr_diff_mse_loss,
+            tr_sas_rec_loss,
+            tr_sas_cl_loss,
+            tr_item_cl_loss,
+            tr_loss,
+        )
 
 
     def train(self):
-        print("********** Running training **********")
+        logger.info("********** Running training **********")
         train_time = []
         early_stopping = EarlyStopping(self.args.checkpoint_path, patience=40, verbose=True)
    
@@ -150,7 +158,7 @@ class Trainer:
 
 
             if early_stopping.early_stop:
-                print("Early stopping!")
+                logger.info("Early stopping!")
                 break
         
         self.model.load_state_dict(torch.load(self.args.checkpoint_path))
@@ -162,10 +170,10 @@ class Trainer:
       
         self.model.eval()
         if not test:
-            print("********** Running eval **********")
+            logger.info("********** Running eval **********")
             prog_iter = tqdm(self.valid_dataloader, leave=False, desc='eval')
         else:
-            print("********** Running test **********")
+            logger.info("********** Running test **********")
             prog_iter = tqdm(self.test_dataloader, leave=False, desc='test')
 
         scores = []

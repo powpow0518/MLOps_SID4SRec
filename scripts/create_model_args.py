@@ -9,10 +9,10 @@ Run this from the project root before starting the serving container:
 
 Output: models/model_args.pkl
 """
-import sys
+import argparse
 import os
 import pickle
-import argparse
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -113,7 +113,7 @@ def main():
     args = build_args()
 
     print("Loading data to build lookup tables...")
-    generator = DataGenerator(args)
+    DataGenerator(args)  # side effect: populates args.item_size, lookups, etc.
     # DataGenerator.create_dataset() populates args with:
     #   item_size, category_lookup, brand_lookup, item_to_category,
     #   item_to_brand, category_items, brand_items, etc.

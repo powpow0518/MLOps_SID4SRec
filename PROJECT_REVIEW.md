@@ -31,18 +31,6 @@
 
 ---
 
-## ❌ 未解決問題（待補強）
-
-### 🟡 重要：訓練程式碼用 `print()` 而非結構化 logging
-
-**問題：** `training/trainer.py` 全部用 `print()` 輸出訓練進度，無 log level、無 timestamp、無格式。`config.py` 88 個 hyperparameter 全用 argparse，論文 code 搬過來的氣味重。
-
-**影響：** Docker log 無法接 log aggregator；面試官看 training code 會直接聞到「論文 code 沒整理」的味道。
-
-**需要做的：** 換成 `logging.getLogger(__name__)`，進階可用 Hydra / OmegaConf 管 config。
-
----
-
 ## 🟢 中等優先（補了會大幅加分）
 
 | # | 項目 | 問題說明 |

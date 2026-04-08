@@ -18,9 +18,10 @@ import time
 from datetime import datetime
 
 import requests
-from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
+
+from airflow import DAG
 
 COMPOSE_DIR = "/opt/airflow/project"
 NGINX_URL = "http://mlops_nginx:80"                   # Nginx 入口（內網）

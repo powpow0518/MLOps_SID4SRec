@@ -5,17 +5,19 @@ DAG: monthly_embedding_update
 """
 
 from datetime import datetime
-from airflow import DAG
+
+import requests
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
-import requests
+
+from airflow import DAG
 
 COMPOSE_DIR = "/opt/airflow/project"
 SERVE_URL = "http://mlops_serve_blue:8000"
 
 def validate_serving():
     import time
-    for attempt in range(10):
+    for _attempt in range(10):
         try:
             resp = requests.get(f"{SERVE_URL}/health", timeout=10)
             if resp.status_code == 200:

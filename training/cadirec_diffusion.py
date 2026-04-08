@@ -1,9 +1,12 @@
 import enum
+import logging
 import math
 import numpy as np
 import torch as th
 import torch.nn.functional as F
 from torch.nn import Linear
+
+logger = logging.getLogger(__name__)
 
 def mean_flat(tensor):
     """
@@ -736,7 +739,7 @@ class GaussianDiffusion:
         # print(sigma.mean())
         sample = mean_pred + nonzero_mask * sigma * noise
         if langevin_fn:
-            print(t.shape)
+            logger.debug("langevin_fn t.shape=%s", tuple(t.shape))
             sample=langevin_fn(sample, mean_pred, sigma, self.alphas_cumprod_prev[t[0]], t, x)
         
         if mask == None:

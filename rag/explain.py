@@ -7,9 +7,15 @@ RAG explanation: 把 RagContext 組成 prompt，呼叫 Gemini API，回傳自然
 
 import logging
 import os
-from typing import Optional
 
 from sqlalchemy.orm import Session
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from rag.context import RagContext, UserContext, build_rag_context
 
@@ -19,6 +25,18 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "models/gemma-4-31b-it")
 
 _gemini_model = None
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type(Exception),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
+def _generate_with_retry(model, prompt: str) -> str:
+    """Call Gemini with exponential backoff (1s → 2s → 4s, max 3 attempts)."""
+    return model.generate_content(prompt).text.strip()
 
 
 def _get_gemini_model():
@@ -140,7 +158,7 @@ def build_summary_prompt(structured_output: str, lang: str) -> str:
 # ── Main entry ───────────────────────────────────────────────────────────────
 
 
-def explain_user(db: Session, user_id: int, lang: str = "zh") -> Optional[dict]:
+def explain_user(db: Session, user_id: int, lang: str = "zh") -> dict | None:
     """
     Returns:
         None — user_representation 不存在（caller 應回 404）
@@ -168,10 +186,10 @@ def explain_user(db: Session, user_id: int, lang: str = "zh") -> Optional[dict]:
         gemini = _get_gemini_model()
 
         structured_prompt = build_structured_prompt(ctx, lang)
-        structured = gemini.generate_content(structured_prompt).text.strip()
+        structured = _generate_with_retry(gemini, structured_prompt)
 
         summary_prompt = build_summary_prompt(structured, lang)
-        summary = gemini.generate_content(summary_prompt).text.strip()
+        summary = _generate_with_retry(gemini, summary_prompt)
 
         return {
             "summary": summary,

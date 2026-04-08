@@ -1,4 +1,5 @@
 import copy
+import logging
 import math
 
 import numpy as np
@@ -6,6 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as fn
 from torch.nn.init import normal_
+
+logger = logging.getLogger(__name__)
 
 class ItemEmbedding(nn.Module):
     def __init__(self, args, num_items, embedding_dim):
@@ -341,7 +344,7 @@ def info_nce(z_i, z_j, psi_seq, temp, batch_size, sim='dot'):
     negative_samples = filtered_sim[mask].reshape(N, -1)
 
     valid_negatives_count = (negative_samples > -1e8).sum()
-    print(f"使用 psi_seq={psi_seq:.2f}: 負樣本數量 = {valid_negatives_count.tolist()}")
+    logger.debug("psi_seq=%.2f, valid negatives=%s", psi_seq, valid_negatives_count.tolist())
     
     labels = torch.zeros(N).to(positive_samples.device).long()
     logits = torch.cat((positive_samples, negative_samples), dim=1)

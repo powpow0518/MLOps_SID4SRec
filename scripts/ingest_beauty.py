@@ -9,9 +9,9 @@ Timestamps are synthetic (base date + 1 hour per interaction per user).
 """
 import os
 import pickle
-import numpy as np
 from datetime import datetime, timedelta
 
+import numpy as np
 import psycopg2
 from psycopg2.extras import execute_values
 
@@ -115,7 +115,7 @@ def ingest(dat):
 
     cur.close()
     conn.close()
-    print(f"Done.")
+    print("Done.")
     print(f"  categories : {len(category_rows)}")
     print(f"  brands     : {len(brand_rows)}")
     print(f"  items      : {len(item_rows)}")

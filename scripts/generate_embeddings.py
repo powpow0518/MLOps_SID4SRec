@@ -56,44 +56,43 @@ def store_embeddings(embeddings, model_version: str):
     """Insert embeddings into item_embedding table, replacing old version."""
     conn = psycopg2.connect(DATABASE_URL)
     try:
-        with conn:
-            with conn.cursor() as cur:
-                # Register model version
-                cur.execute(
-                    """
+        with conn, conn.cursor() as cur:
+            # Register model version
+            cur.execute(
+                """
                     INSERT INTO model_version (model_version, is_active, note)
                     VALUES (%s, FALSE, 'auto-generated embeddings')
                     ON CONFLICT (model_version) DO NOTHING
                     """,
-                    (model_version,),
-                )
+                (model_version,),
+            )
 
-                # 只存 DB 裡實際存在的 item_id（避免 FK 違反）
-                cur.execute("SELECT item_id FROM item")
-                valid_item_ids = {row[0] for row in cur.fetchall()}
+            # 只存 DB 裡實際存在的 item_id（避免 FK 違反）
+            cur.execute("SELECT item_id FROM item")
+            valid_item_ids = {row[0] for row in cur.fetchall()}
 
-                batch = [
-                    (int(item_id), model_version, embedding.tolist())
-                    for item_id, embedding in enumerate(embeddings)
-                    if item_id > 0 and item_id in valid_item_ids
-                ]
+            batch = [
+                (int(item_id), model_version, embedding.tolist())
+                for item_id, embedding in enumerate(embeddings)
+                if item_id > 0 and item_id in valid_item_ids
+            ]
 
-                cur.executemany(
-                    """
+            cur.executemany(
+                """
                     INSERT INTO item_embedding (item_id, model_version, embedding)
                     VALUES (%s, %s, %s::vector)
                     ON CONFLICT (item_id, model_version) DO UPDATE
                         SET embedding = EXCLUDED.embedding
                     """,
-                    batch,
-                )
+                batch,
+            )
 
-                # Mark this version as active, deactivate others
-                cur.execute("UPDATE model_version SET is_active = FALSE")
-                cur.execute(
-                    "UPDATE model_version SET is_active = TRUE WHERE model_version = %s",
-                    (model_version,),
-                )
+            # Mark this version as active, deactivate others
+            cur.execute("UPDATE model_version SET is_active = FALSE")
+            cur.execute(
+                "UPDATE model_version SET is_active = TRUE WHERE model_version = %s",
+                (model_version,),
+            )
 
         print(f"Stored {len(batch)} embeddings for version '{model_version}'")
     finally:
