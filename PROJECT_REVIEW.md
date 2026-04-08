@@ -36,11 +36,11 @@
 | # | 項目 | 問題說明 |
 |---|------|---------|
 | 5 | **README 加截圖** | Grafana dashboard、Swagger UI、Airflow DAG graph — 招募者 30 秒掃 README 決定要不要點進去 |
-| 6 | **Gemini API 加 retry + timeout** | 目前失敗一次直接 fallback，`tenacity` decorator 讓暫時性網路問題自動重試 |
+| 6 | **Gemini API 加 timeout** | retry 已透過 tenacity 完成（3 次 + exp backoff），但單次呼叫仍無 timeout，quota exhausted 時會長時間掛著 |
 | 7 | **Prometheus metrics** | `prometheus-fastapi-instrumentator`，Grafana 目前只看 DB，缺 latency / QPS / error rate |
 | 8 | **MLflow 或 W&B 整合** | 訓練實驗追蹤：「我怎麼知道這個 model 比上一版好」 |
 | 9 | **資料品質檢查** | ingestion 階段擋掉壞資料（Great Expectations 或自寫 `data_pipeline/validate.py`）|
-| 10 | **pyproject.toml + ruff + mypy** | 程式碼品質的最低門檻 |
+| 10 | **mypy 型別檢查** | ruff I/B/UP/SIM 已開，下一步加 mypy 擋住型別錯誤 |
 | 11 | **訓練資料來源閉環** | `DataGenerator` 目前從 raw `.dat` pickle 讀，不依賴 ingestion 結果，pipeline 沒真的閉環 |
 
 ---
@@ -51,7 +51,7 @@
 |------|------|------|
 | 系統設計廣度 | 9 / 10 | 涵蓋面非常廣 |
 | 基礎設施 / Docker | 9 / 10 | Nginx Blue-Green 完整；Grafana datasource 走環境變數 |
-| 程式碼品質 | 6 / 10 | training/ 有 print()；serving/ 乾淨 |
+| 程式碼品質 | 7.5 / 10 | training/ 已改 logging；ruff 規則擴到 I/B/UP/SIM；缺 mypy |
 | 測試 | 7 / 10 | 47 個整合測試；缺 unit/mock 層 |
 | CI/CD | 7 / 10 | GitHub Actions 已建；缺 staging deploy check |
 | 文件 | 9 / 10 | README + DECISIONS + PROJECT_REVIEW 持續更新 |

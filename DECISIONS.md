@@ -435,6 +435,20 @@ user_representation(user_id, model_version, representation vector(192), created_
 - `source` 欄位讓 client 可以區分是真解釋還是 fallback
 - 失敗 log 給 server 側追蹤 quota / 網路問題
 
+### 7.7.1 Gemini 呼叫 retry 策略（tenacity）
+**決策：** Gemini API 呼叫用 `tenacity` decorator 包起來：最多 3 次嘗試、exponential backoff（1s → 2s → 4s，上限 8s）、`reraise=True` 讓最終失敗由外層 try/except 接去 fallback。
+
+**原因：**
+- 原本「一次失敗就 fallback」對暫時性網路抖動太脆弱，一個 5xx 就整段回 fallback 文字，RAG 品質被單一事件拉低
+- 3 次是「夠救暫時性故障，又不會拖慢 client」的折衷（最壞情況 ~7s 才放棄，仍在人類可接受範圍）
+- Exponential backoff 是標準實踐：避免 thundering herd，也讓 rate limit 有時間 recover
+- 用 `tenacity` 而非手寫迴圈：decorator 模式不污染業務邏輯，重試策略集中在一處好調整
+- `reraise=True` 是關鍵：原本外層的 `except Exception` fallback 邏輯完全不用改，retry 只是「在失敗前多試幾次」
+
+**尚未完成：** 單次呼叫還沒加 timeout。quota exhausted 時 Google SDK 會掛很久，應該再補 `timeout` 參數或用 `stop_after_delay`。
+
+---
+
 ### 7.8 Code 結構
 **決策：** RAG 邏輯獨立成 `rag/` module，serving 只 import。
 ```
@@ -548,3 +562,58 @@ recommendation_feedback_log(id, user_id, item_id, timestamp, hit)
 1. `ruff check`（lint）
 2. `pytest tests/`（含 PostgreSQL service container，跑完整整合測試）
 3. `docker build`（serve image + train image）
+
+### 9.3 Ruff 規則選擇
+**決策：** `pyproject.toml` 的 `[tool.ruff.lint]` `select` 目前為 `["E4", "E7", "E9", "F", "I", "B", "UP", "SIM"]`。
+
+**為什麼不直接 `select = ["ALL"]`：**
+- `ALL` 會把 Google docstring、naming、annotation 等風格類規則全開，對一個「從碩論 code 搬過來 + 快速迭代」的專案是純粹的噪音
+- 規則多到一眼看不完，反而沒人會認真讀 CI 報告
+- 選擇性啟用讓每條規則都有「為什麼」可以講
+
+**為什麼選這 8 組：**
+- `E4` / `E7` / `E9`：import / statement / runtime 層面的硬錯，不開沒道理
+- `F`：pyflakes，抓真正的 bug（unused import、undefined name）
+- `I`：isort，import 排序一致，diff 乾淨
+- `B`：bugbear，抓 `except:` 裸接、`mutable default arg` 這類常見陷阱
+- `UP`：pyupgrade，強制使用 Python 3.10+ 語法（`X | None` 取代 `Optional[X]`），連帶清掉 legacy typing
+- `SIM`：simplify，抓可以用 `dict.get()` / ternary / comprehension 改寫的冗贅結構
+
+**Ignore 清單的妥協：**
+- `E501`（line too long）：case-by-case 判斷，不一律截
+- `B008`（function call in default arg）：FastAPI 的 `Depends()` 慣用法就長這樣，規則誤傷
+- `SIM108`（ternary 取代 if/else）：可讀性有時反而下降
+
+**per-file-ignores：**
+- `scripts/*.py` 允許 `T201`（`print`）：一次性腳本的 print 是功能而非 smell
+- `tests/*.py` 允許 `B011`（`assert False`）：測試裡 `assert False` 表達「這條路不該走到」很清楚
+
+**training/ 與 data_pipeline/ 排除：** 這兩個目錄分別是碩論原始模型 code 與原始 dataset 載入邏輯，風格不強制，避免為了過 lint 改壞原始實作。
+
+**Training logging 例外：** training/ 雖然排除在 ruff 之外，但內部的 `print()` → `logging` 改寫仍然做了（見 §10.1），理由是 observability 不是風格問題，是能不能接 log aggregator 的基本功能。
+
+---
+
+## 10. Code Quality & Observability
+
+### 10.1 Training code 改用結構化 logging
+**決策：** `training/` 下所有 active `print()`（trainer / train / utils / modules / cadirec_diffusion）換成 module-level `logger = logging.getLogger(__name__)`，`train.py` 入口設 `basicConfig(level=INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")`。註解掉的 debug `# print(...)` 維持不動。
+
+**原因：**
+- 原本全部 `print()`，沒有 log level、沒有 timestamp、沒有來源模組，Docker log 拉出來完全無法接 log aggregator（Loki / ELK），也沒法按模組過濾
+- 面試官打開 `training/trainer.py` 第一眼就會看到一堆 `print(f' epoch {epoch}: ...')`，「從論文 code 直接搬過來沒整理」的印象立刻成立
+- Per-step 的 debug 輸出（`modules.py` 的負樣本數量、`cadirec_diffusion.py` 的 `t.shape`）降成 `logger.debug`，預設不印，需要時一行 `setLevel(DEBUG)` 就能打開
+
+**為什麼不直接上 Hydra / OmegaConf：**
+- `training/config.py` 有 88 個 hyperparameter 全走 argparse，確實有「論文 code 氣味」，改成 Hydra 是正確方向
+- 但這是一個 scope 很大的重構（要改 CLI 介面、訓練腳本入口、DAG 裡的呼叫），而 observability 的痛點用 `logging` 就能解決
+- 先做 logging 補 80% 的價值，Hydra 留到真的需要做 experiment sweep 時再上
+
+### 10.2 為什麼先做 ruff 不做 mypy
+**決策：** 型別檢查這輪先不上 mypy，ruff 的 `UP` / `F` 規則先把典型的型別相關 smell（legacy `Optional[X]`、unused import）清掉。
+
+**原因：**
+- mypy 嚴格模式（`strict = true`）在這個專案會炸出數百條 error（大量第三方 lib 沒 stub、pgvector / sqlalchemy 的型別推斷複雜）
+- 要做就要認真做（寫 stub、加 `# type: ignore` 註解、配 `mypy.ini` 的 per-module overrides），這不是 30 分鐘能收尾的工
+- ruff 的 `UP006` / `UP007` 已經把 `List[X]` → `list[X]`、`Optional[X]` → `X | None` 自動改完，現代化了一大半的 type hint
+- mypy 留在 PROJECT_REVIEW #10，等下一輪有完整時段再補
