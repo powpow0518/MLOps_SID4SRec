@@ -185,6 +185,14 @@ Client → Nginx(:80) → serve_blue  (預設 active)
 
 **原因：** 對應本機 GPU RTX 2060 的 CUDA 11.7，確保相容性。
 
+### 3.7 Train container 啟用 GPU
+**決策：** `docker-compose.yml` 的 `train` service 加入 `deploy.resources.reservations.devices`（driver: nvidia, count: all）。
+
+**原因：**
+- 原本沒有這段設定，Docker 預設不把 host GPU 傳進 container，PyTorch 只看得到 CPU
+- 前提：host 有 NVIDIA driver、安裝 NVIDIA Container Toolkit、Docker Desktop 使用 WSL2 backend 並啟用 GPU
+- RTX 2060 + CUDA 11.7 base image 驗證：`docker run --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi` 成功，`torch.cuda.is_available()` 回 True
+
 ---
 
 ## 4. Serving API
@@ -319,6 +327,14 @@ docker compose -f /opt/airflow/project/docker-compose.yml \
 **決策：** `.env` 檔定義 `MLOPS_PROJECT_DIR=E:/demo/project_MLOps`，train service volume 使用 `${MLOPS_PROJECT_DIR}/models:/models`。
 
 **原因：** 從 Airflow container 執行 docker compose 時，`./models` 相對路徑會被解析成 container 內的路徑，Docker daemon（在 Windows host）找不到。絕對路徑確保 Windows host 能正確 mount。
+
+### 5.6 Eval 改用 per-batch topk 避免 OOM
+**決策：** `trainer.py` 的 `eval()` 改為每個 batch 直接做 `torch.topk(bs_scores, 20, dim=1)`，不再累積完整 scores matrix。
+
+**原因：**
+- 原本做法：每個 batch 的 `(batch, num_items)` scores 全部 `append`，迴圈結束後 `torch.cat` 成 `(num_users, num_items)` 再做 `np.argpartition`。Beauty 資料集約 22,000 users × 12,000 items × 4 bytes ≈ 1GB，加上 `-scores` 拷貝和 argsort 中間結果，eval 結束瞬間峰值超過 WSL2 VM 可用 RAM（6GB），被 kernel OOM killer 砍掉（exit code 137）
+- per-batch topk 後只保留 `(num_users, 20)`，累積記憶體 ~3.5MB，問題消失
+- `get_full_sort_score` 收到的 `pred_list` 格式不變（降冪 top-20 list of lists）
 
 ---
 

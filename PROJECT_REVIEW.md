@@ -41,7 +41,6 @@
 | 8 | **MLflow 或 W&B 整合** | 訓練實驗追蹤：「我怎麼知道這個 model 比上一版好」 |
 | 9 | **資料品質檢查** | ingestion 階段擋掉壞資料（Great Expectations 或自寫 `data_pipeline/validate.py`）|
 | 10 | **mypy 型別檢查** | ruff I/B/UP/SIM 已開，下一步加 mypy 擋住型別錯誤 |
-| 11 | **訓練資料來源閉環** | `DataGenerator` 目前從 raw `.dat` pickle 讀，不依賴 ingestion 結果，pipeline 沒真的閉環 |
 
 ---
 
