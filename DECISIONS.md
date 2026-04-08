@@ -185,13 +185,6 @@ Client → Nginx(:80) → serve_blue  (預設 active)
 
 **原因：** 對應本機 GPU RTX 2060 的 CUDA 11.7，確保相容性。
 
-### 3.7 Train container 啟用 GPU
-**決策：** `docker-compose.yml` 的 `train` service 加入 `deploy.resources.reservations.devices`（driver: nvidia, count: all）。
-
-**原因：**
-- 原本沒有這段設定，Docker 預設不把 host GPU 傳進 container，PyTorch 只看得到 CPU
-- 前提：host 有 NVIDIA driver、安裝 NVIDIA Container Toolkit、Docker Desktop 使用 WSL2 backend 並啟用 GPU
-- RTX 2060 + CUDA 11.7 base image 驗證：`docker run --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi` 成功，`torch.cuda.is_available()` 回 True
 
 ---
 
