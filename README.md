@@ -69,7 +69,7 @@ This system serves personalized item recommendations using **SID4SRec** — a SA
 
 ```
 .
-├── serving/          # FastAPI application + RAG explanation (rag/)
+├── serving/          # FastAPI application + RAG explanation (rag/) + input validation (dependencies/)
 ├── training/         # SID4SRec model code (sid4srec.py, trainer.py, ...)
 ├── airflow/dags/     # Airflow DAGs (manual_retrain, monthly_embedding_update)
 ├── data_pipeline/    # Data ingestion utilities
@@ -233,7 +233,7 @@ This is an active learning project. Current progress:
 
 ```
 .
-├── serving/          # FastAPI 應用程式 + RAG 解釋模組（rag/）
+├── serving/          # FastAPI 應用程式 + RAG 解釋模組（rag/）+ input validation（dependencies/）
 ├── training/         # SID4SRec 模型程式碼（sid4srec.py, trainer.py, ...）
 ├── airflow/dags/     # Airflow DAG（manual_retrain, monthly_embedding_update）
 ├── data_pipeline/    # 資料注入工具

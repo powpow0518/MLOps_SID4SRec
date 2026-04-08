@@ -8,7 +8,7 @@
 
 **這個專案在「系統設計廣度」與「MLOps 完整度」上已達正式履歷專案水準，剩下的問題集中在 runtime 穩健性與程式碼品質。**
 
-目前等級：**8 / 10**
+目前等級：**8.5 / 10**
 
 ---
 
@@ -25,7 +25,7 @@
 | **Observability 入口** | Grafana provisioning（IaC），命中率 / category / brand / 活躍度 drill-down |
 | **配置即程式碼** | 完整 Docker Compose、Dockerfile per service、profiles 區分 train/serve/green |
 | **Blue-Green 部署** | Nginx + sed swap + `nginx -s reload`，manual_retrain DAG 自動切換，含 pre-flight grep 防呆 |
-| **測試** | 47 個 API 整合測試（42 pass / 3 xfail / 2 LLM skip），含 conftest fixture、xfail 釘住已知 gap |
+| **測試** | 47 個 API 整合測試（46 pass / 2 LLM skip），含 conftest fixture、serving/dependencies 覆蓋 input validation |
 | **CI/CD** | GitHub Actions：lint + pytest + docker build |
 | **ID 產生** | `nextval()` sequence 取代 `MAX(id)+1`，無競態條件 |
 

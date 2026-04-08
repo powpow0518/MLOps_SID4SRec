@@ -255,6 +255,27 @@ Client → Nginx(:80) → serve_blue  (預設 active)
 - 大量注入資料後需執行 `scripts/sync_sequences.sql`，把各 sequence 對齊 `MAX(id)`，避免與已存在的 ID 衝突
 - `ingest_beauty.py` 結尾自動執行同步，不需手動呼叫
 
+### 4.7 Input Validation — `serving/dependencies/`
+**決策：** `POST /feedback`、`POST /interaction` 在 INSERT 前驗證 `user_id` / `item_id` 存在於 DB，不存在回 404。驗證邏輯抽成共用 helper function，放在 `serving/dependencies/`。
+
+**檔案結構：**
+```
+serving/dependencies/
+  user.py   # UserRow dataclass + get_user_or_404(user_id, db)
+  item.py   # ItemRow dataclass + get_item_or_404(item_id, db)
+```
+
+**為什麼不用 FastAPI `Depends()`：**
+- `Depends()` 適合從 path / query / header 拿參數；這兩個 endpoint 的 `user_id` / `item_id` 來自 request body
+- 若 dependency 吃 body model（`FeedbackRequest`），就無法跨 endpoint 共用
+- 改成普通 function，endpoint 手動呼叫，簡單且不引入框架耦合
+
+**為什麼回傳 dataclass 而非只回傳 id：**
+- 其他 endpoint 未來若需要 user / item 的欄位，不需要再查一次 DB
+- `ItemRow` 已含 `category_id1 / 2`、`brand_id`、`price`，可直接使用
+
+**`POST /item` price 驗證：** `price: float = Field(ge=0)`，Pydantic schema 層擋，不合法直接 422，不進 DB。
+
 ---
 
 ## 5. Airflow Pipeline
