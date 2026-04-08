@@ -9,12 +9,14 @@ from typing import List, Literal, Optional
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 
 from training.sid4srec import SID4SRec
 from rag.explain import explain_user
+from serving.dependencies.user import get_user_or_404
+from serving.dependencies.item import get_item_or_404
 
 # ── Global model state ───────────────────────────────────────────────────────
 _model: SID4SRec = None
@@ -232,7 +234,7 @@ class CreateItemRequest(BaseModel):
     category1: str
     category2: Optional[str] = None
     brand: str
-    price: float
+    price: float = Field(ge=0)
 
 
 class FeedbackRequest(BaseModel):
@@ -547,6 +549,8 @@ def create_item(req: CreateItemRequest, db: Session = Depends(get_db)):
 @app.post("/feedback", tags=["interaction"])
 def feedback(req: FeedbackRequest, db: Session = Depends(get_db)):
     """Record a recommendation-driven interaction and check if it was a hit."""
+    get_user_or_404(req.user_id, db)
+    get_item_or_404(req.item_id, db)
     now = datetime.now(timezone.utc)
 
     db.execute(
@@ -608,6 +612,8 @@ def explain(
 @app.post("/interaction", tags=["interaction"])
 def interaction(req: InteractionRequest, db: Session = Depends(get_db)):
     """Record an organic interaction (user found item independently)."""
+    get_user_or_404(req.user_id, db)
+    get_item_or_404(req.item_id, db)
     now = datetime.now(timezone.utc)
     db.execute(
         text("INSERT INTO interaction (user_id, item_id, timestamp) VALUES (:uid, :iid, :ts)"),

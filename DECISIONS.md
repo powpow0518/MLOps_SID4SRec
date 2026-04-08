@@ -217,7 +217,7 @@ Client → Nginx(:80) → serve_blue  (預設 active)
 
 **原因：** 每次 request 重新 load model 延遲太高（數秒），serving 需要低延遲。
 
-### 4.2 新增 POST /item
+### 4.3 新增 POST /item
 
 **決策：** 新增 `POST /item` endpoint，允許建立新商品。
 
@@ -231,19 +231,19 @@ Client → Nginx(:80) → serve_blue  (預設 active)
 
 ---
 
-### 4.3 feedback vs interaction 分離
+### 4.4 feedback vs interaction 分離
 **決策：**
 - `POST /feedback`：使用者點擊/購買了推薦的商品
 - `POST /interaction`：使用者自行搜尋購買（非推薦來源）
 
 **原因：** 兩者職責不同，feedback 用於評估推薦品質，interaction 用於補充訓練資料。
 
-### 4.4 Implicit feedback only
+### 4.5 Implicit feedback only
 **決策：** 不設計 explicit feedback（如評分），只記錄行為（點擊/購買）。
 
 **原因：** Amazon Beauty 資料集本身只有 implicit feedback，模型設計也是針對 implicit。
 
-### 4.5 Atomic ID 產生策略（PostgreSQL Sequences）
+### 4.6 Atomic ID 產生策略（PostgreSQL Sequences）
 **決策：** `POST /user`、`POST /item` 使用 PostgreSQL sequence（`nextval()`）產生 ID，而非 `SELECT MAX(id) + 1`。
 
 **原因：**
@@ -342,7 +342,7 @@ user_representation(user_id, model_version, representation vector(192), created_
 | 相似 user top-k | 3 |
 | 相似 user cosine similarity threshold | ≥ 0.5 |
 
-### 7.2.1 LLM 選擇
+### 7.3 LLM 選擇
 **決策：** 使用 `models/gemini-2.5-flash` 透過 Google Gemini API。
 
 **原因：**
@@ -355,7 +355,7 @@ user_representation(user_id, model_version, representation vector(192), created_
 
 **初次嘗試 Gemma-4-31b-it（已棄用）：** 一開始用 `models/gemma-4-31b-it`，但測試發現它會把整個推理過程（Draft 1、Self-Correction、Final Polish 等）全部吐出來，prompt 加再多「不要 think out loud」的指令也壓不下來。Gemma 是 open model 風格，本來就不適合需要乾淨輸出的 production endpoint。換成 Gemini 2.5 Flash 後直接吐出單段純文字，無需後處理。
 
-### 7.3 一般用戶 RAG 流程（兩階段 LLM）
+### 7.4 一般用戶 RAG 流程（兩階段 LLM）
 ```
 輸入：user_id
   ↓
@@ -387,7 +387,7 @@ user_representation(user_id, model_version, representation vector(192), created_
 - 結構化先確保每個 item 有解釋，摘要再整合核心規律
 - client 只需要 `summary`，結構化作為中間步驟不回傳
 
-### 7.4 Context 範圍（每個 user）
+### 7.5 Context 範圍（每個 user）
 **決策：** 每個 user（目標 + 相似）的 prompt context 包含：
 - 最近 10 次互動的 item（含 category, brand, price，JOIN item table）
 - 整段歷史的 top 3 categories（出現次數）
@@ -398,7 +398,7 @@ user_representation(user_id, model_version, representation vector(192), created_
 - 「top 3 cats/brands」抓長期品味訊號（聚合統計，不爆 prompt）
 - Prompt size 固定，不會隨 user 歷史長度暴增
 
-### 7.5 新用戶處理（cold start）
+### 7.6 新用戶處理（cold start）
 **決策：** `/explain` 查不到 `user_representation` 直接回 404，訊息「請先呼叫 POST /user 或 GET /recommend」。
 
 **原因：**
@@ -406,7 +406,7 @@ user_representation(user_id, model_version, representation vector(192), created_
 - 新用戶應透過 `POST /user`（帶 item_sequence 建立帳號）或 `GET /recommend` 建立歷史
 - 不在 `/explain` 內做 fallback inference，避免額外延遲與職責混淆
 
-### 7.6 LLM 失敗處理
+### 7.7 LLM 失敗處理
 **決策：** Gemini API 失敗時回 HTTP 200 + fallback 文字 + `source: "fallback"`，server side 記 log。
 
 **原因：**
@@ -414,7 +414,7 @@ user_representation(user_id, model_version, representation vector(192), created_
 - `source` 欄位讓 client 可以區分是真解釋還是 fallback
 - 失敗 log 給 server 側追蹤 quota / 網路問題
 
-### 7.7 Code 結構
+### 7.8 Code 結構
 **決策：** RAG 邏輯獨立成 `rag/` module，serving 只 import。
 ```
 rag/
@@ -428,7 +428,7 @@ serving/main.py # 只掛 GET /explain endpoint
 - RAG 內部邏輯可獨立測試（例如 mock Gemini 測 prompt builder）
 - 之後加新 RAG endpoint（管理員 dashboard 等）有地方放
 
-### 7.8 多語言支援
+### 7.9 多語言支援
 **決策：** `/explain?lang=zh|en`，預設 `zh`（繁體中文）。System prompt 模板按 lang 切換，data 段落（item 屬性）保持英文不變。
 
 ---
@@ -468,6 +468,9 @@ grafana/provisioning/
   dashboards/provider.yaml       # dashboard 載入設定
   dashboards/recommendation_analytics.json  # dashboard 定義
 ```
+
+**Datasource 密碼管理（2026-04-07）：**
+`datasources/postgres.yaml` 的 `user`、`password`、`database` 改用 `$POSTGRES_USER`、`$POSTGRES_PASSWORD`、`$POSTGRES_DB` 插值（Grafana provisioning 原生支援 `$VAR` 從環境變數讀取）。`docker-compose.yml` 的 grafana service 明確傳入這三個環境變數，值沿用 `${POSTGRES_*:-mlops}` 預設值。不再硬寫密碼，換環境部署只改 `.env`。
 
 ### 8.4 Dashboard Panels
 | Panel | 類型 | 說明 |

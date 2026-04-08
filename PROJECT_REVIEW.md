@@ -33,33 +33,13 @@
 
 ## ❌ 未解決問題（待補強）
 
-### 🟡 重要 1：`/feedback` / `/interaction` 缺 input validation
-
-**問題：** 兩個 endpoint 都沒有驗證 `user_id` 和 `item_id` 是否存在於 DB，直接 INSERT 可能造成 FK 違反。
-
-**影響：** 傳入不存在的 user_id / item_id 會拿到 DB 層的 IntegrityError 而非友善的 404。
-
-**需要做的：** INSERT 前查 `SELECT 1 FROM "user" WHERE user_id = :uid`，不存在就 raise HTTPException 404。
-
----
-
-### 🟡 重要 2：訓練程式碼用 `print()` 而非結構化 logging
+### 🟡 重要：訓練程式碼用 `print()` 而非結構化 logging
 
 **問題：** `training/trainer.py` 全部用 `print()` 輸出訓練進度，無 log level、無 timestamp、無格式。`config.py` 88 個 hyperparameter 全用 argparse，論文 code 搬過來的氣味重。
 
 **影響：** Docker log 無法接 log aggregator；面試官看 training code 會直接聞到「論文 code 沒整理」的味道。
 
 **需要做的：** 換成 `logging.getLogger(__name__)`，進階可用 Hydra / OmegaConf 管 config。
-
----
-
-### 🟡 重要 3：Grafana datasource hardcode 密碼
-
-**問題：** `grafana/provisioning/datasources/postgres.yaml` 直接寫死 `password: mlops`，沒走環境變數。
-
-**影響：** secret management 基本門檻沒達到，換環境部署要手動改檔案。
-
-**需要做的：** 改用 Grafana 的 `${GF_DATASOURCE_PASSWORD}` 插值，或走 `secureJsonData`。
 
 ---
 
@@ -82,15 +62,15 @@
 | 面向 | 分數 | 備註 |
 |------|------|------|
 | 系統設計廣度 | 9 / 10 | 涵蓋面非常廣 |
-| 基礎設施 / Docker | 8 / 10 | Nginx Blue-Green 完整；Grafana secret 仍 hardcode |
+| 基礎設施 / Docker | 9 / 10 | Nginx Blue-Green 完整；Grafana datasource 走環境變數 |
 | 程式碼品質 | 6 / 10 | training/ 有 print()；serving/ 乾淨 |
 | 測試 | 7 / 10 | 47 個整合測試；缺 unit/mock 層 |
 | CI/CD | 7 / 10 | GitHub Actions 已建；缺 staging deploy check |
 | 文件 | 9 / 10 | README + DECISIONS + PROJECT_REVIEW 持續更新 |
 | Observability | 6 / 10 | Grafana 有 dashboard；缺 metrics / traces |
-| 一致性（設計 vs 實作）| 9 / 10 | cold-start 已修；剩 validation gap |
+| 一致性（設計 vs 實作）| 10 / 10 | cold-start 已修；input validation 已補 |
 
-**總分：8 / 10 — 可以拿去面試，剩下是加分項。**
+**總分：8.5 / 10 — 可以拿去面試，剩下是加分項。**
 
 ---
 

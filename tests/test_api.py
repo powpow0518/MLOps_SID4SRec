@@ -8,11 +8,9 @@ Run with the stack up:
 Skip LLM-dependent tests:
     pytest tests/test_api.py -m "not llm"
 
-Notes on validation gaps marked with `xfail`:
-    /feedback and /interaction don't validate that user_id / item_id exist —
-    bad inputs currently surface as 500 from a DB FK violation. The xfail tests
-    pin this gap so it shows up in CI; once the endpoints validate properly,
-    flip them to expected pass and they'll fail loudly to remind us to remove the marker.
+Notes on validation:
+    /feedback and /interaction validate user_id / item_id existence before INSERT,
+    returning 404 for unknown IDs instead of surfacing a DB FK violation as 500.
 """
 
 import os
@@ -171,7 +169,6 @@ class TestCreateItem:
         r = http.post(f"{base_url}/item", json=bad_payload)
         assert r.status_code == 422
 
-    @pytest.mark.xfail(reason="endpoint does not validate price >= 0; gap pinned for follow-up")
     def test_negative_price_rejected(self, http, base_url):
         r = http.post(f"{base_url}/item", json={
             "category1": "_t", "category2": None, "brand": "_t", "price": -1.0,
@@ -214,7 +211,6 @@ class TestFeedback:
         r = http.post(f"{base_url}/feedback", json=bad_payload)
         assert r.status_code == 422
 
-    @pytest.mark.xfail(reason="endpoint does not validate user_id/item_id existence; FK violation surfaces as 500")
     def test_nonexistent_user_rejected(self, http, base_url):
         r = http.post(f"{base_url}/feedback", json={"user_id": 99_999_999, "item_id": 1})
         assert r.status_code in (404, 422)
@@ -240,7 +236,6 @@ class TestInteraction:
         r = http.post(f"{base_url}/interaction", json=bad_payload)
         assert r.status_code == 422
 
-    @pytest.mark.xfail(reason="endpoint does not validate user_id/item_id existence; FK violation surfaces as 500")
     def test_nonexistent_user_rejected(self, http, base_url):
         r = http.post(f"{base_url}/interaction", json={"user_id": 99_999_999, "item_id": 1})
         assert r.status_code in (404, 422)
