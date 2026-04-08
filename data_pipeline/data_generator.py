@@ -36,6 +36,76 @@ class DataGenerator(object):
         test_rating_matrix = generate_rating_matrix_test(seq_dic['user_seq'], seq_dic['n_users'], n_items)    
         return valid_rating_matrix, test_rating_matrix
 
+    def get_data_dic_from_db(self, db_url):
+        """Build data_dic directly from PostgreSQL (interaction + item + category + brand)."""
+        import psycopg2
+
+        if not db_url:
+            raise ValueError("--use_db is set but --db_url (or DATABASE_URL env) is empty")
+
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
+
+        # 1. user sequences: sorted by (user_id, timestamp)
+        cur.execute("""
+            SELECT user_id, item_id
+            FROM interaction
+            ORDER BY user_id, timestamp
+        """)
+        user_items = defaultdict(list)
+        for uid, iid in cur.fetchall():
+            user_items[uid].append(iid)
+
+        # filter users with too few interactions (same convention as pickle path)
+        filter_num = getattr(self.args, 'filter_num', 5)
+        user_seq = [items for items in user_items.values() if len(items) >= filter_num]
+        n_users = len(user_seq)
+
+        # 2. item features
+        cur.execute("""
+            SELECT item_id,
+                   COALESCE(price, 0.0),
+                   COALESCE(category_id1, 0),
+                   COALESCE(category_id2, 0),
+                   COALESCE(brand_id, 0)
+            FROM item
+            ORDER BY item_id
+        """)
+        item_rows = cur.fetchall()
+        max_item_id = max((row[0] for row in item_rows), default=0)
+        n_items = max_item_id + 2  # 0 = padding, mirrors pickle convention (+2)
+
+        # 3. vocab sizes
+        cur.execute("SELECT COALESCE(MAX(category_id), 0) FROM category")
+        n_categories = cur.fetchone()[0] + 1
+        cur.execute("SELECT COALESCE(MAX(brand_id), 0) FROM brand")
+        n_brands = cur.fetchone()[0] + 1
+
+        conn.close()
+
+        # 4. build items_feat matrix: shape (n_items, 4) = [price, cat1, cat2, brand]
+        #    matches get_feats_vec expectations: feats[:, 1:-1] = cats, feats[:, -1] = brand
+        items_feat = np.zeros((n_items, 4), dtype=np.float32)
+        for item_id, price, cat1, cat2, brand in item_rows:
+            if 0 < item_id < n_items:
+                items_feat[item_id] = [float(price), float(cat1), float(cat2), float(brand)]
+
+        # feature_size follows the same pattern as the pickle path (kept for arg compatibility)
+        feature_size = 2 + 1 + n_categories + n_brands - 2
+
+        return {
+            'user_seq_wt': [],
+            'user_seq': user_seq,
+            'user_seq_wt_dic': {},
+            'items_feat': items_feat,
+            'category2id': {},
+            'n_items': n_items,
+            'n_users': n_users,
+            'n_categories': n_categories,
+            'n_brands': n_brands,
+            'feature_size': feature_size,
+        }
+
     def get_data_dic(self, data_file):
         dat = pkl.load(open(f'{data_file}_all_multi_word.dat', 'rb'))
         data = {}
@@ -119,7 +189,11 @@ class DataGenerator(object):
         return feats, item_to_category, category_items, category_lookup, item_to_brand, brand_items, brand_lookup    
         
     def create_dataset(self):
-        data_dic = self.get_data_dic(self.data_file)
+        if getattr(self.args, 'use_db', False):
+            print("========dataset: PostgreSQL (via --use_db)===========")
+            data_dic = self.get_data_dic_from_db(self.args.db_url)
+        else:
+            data_dic = self.get_data_dic(self.data_file)
         self.item_size = data_dic['n_items'] + 1
         self.args.feature_size = data_dic['feature_size']
         self.args.n_categories = data_dic['n_categories']
