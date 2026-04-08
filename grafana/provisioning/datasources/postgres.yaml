@@ -4,11 +4,11 @@ datasources:
   - name: PostgreSQL
     type: postgres
     url: postgres:5432
-    user: mlops
+    user: $POSTGRES_USER
     secureJsonData:
-      password: mlops
+      password: $POSTGRES_PASSWORD
     jsonData:
-      database: mlops
+      database: $POSTGRES_DB
       sslmode: disable
       maxOpenConns: 5
       maxIdleConns: 2
