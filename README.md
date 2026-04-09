@@ -154,6 +154,9 @@ docker compose run --rm train python -m scripts.ingest_beauty
 # generate non-conflicting IDs via nextval rather than MAX+1)
 docker compose exec postgres psql -U mlops -d mlops -f /dev/stdin < scripts/sync_sequences.sql
 
+# (If reusing an existing volume after a schema change, apply schema patch)
+docker compose exec postgres psql -U mlops -d mlops -f /dev/stdin < scripts/schema_patch.sql
+
 # Generate item embeddings
 docker compose run --rm train python -m scripts.generate_embeddings
 
@@ -332,6 +335,9 @@ docker compose run --rm train python -m scripts.ingest_beauty
 
 # 同步 DB sequence（注入後必須執行一次——確保 POST /user、POST /item 透過 nextval 產生不衝突的 ID）
 docker compose exec postgres psql -U mlops -d mlops -f /dev/stdin < scripts/sync_sequences.sql
+
+# （若沿用舊 volume 且 schema 有異動，補套 schema patch）
+docker compose exec postgres psql -U mlops -d mlops -f /dev/stdin < scripts/schema_patch.sql
 
 # 產生 item embedding
 docker compose run --rm train python -m scripts.generate_embeddings

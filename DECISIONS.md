@@ -37,6 +37,15 @@ recommendation_log(id, user_id, recommended_items, created_at)
 - Serving 每次推薦後自動記錄結果，供 `/feedback` endpoint 判斷是否命中
 - 同時作為推薦品質監控資料來源
 
+**Schema 異動流程（`init.sql` 只在 volume 初始化時跑一次）：**
+1. 修改 `docker/init.sql`（加新 table / column / index）
+2. 同步修改 `scripts/schema_patch.sql`（保持兩者一致）
+3. 對現有 volume 執行 patch：
+   ```bash
+   docker compose exec postgres psql -U mlops -d mlops -f /dev/stdin < scripts/schema_patch.sql
+   ```
+   所有語句都是冪等的（`IF NOT EXISTS`），可安全重跑。
+
 ---
 
 ## 2. Model
