@@ -74,6 +74,21 @@ with DAG(
     tags=["rollback", "manual"],
 ) as dag:
 
+    restore_model_files = BashOperator(
+        task_id="restore_model_files",
+        bash_command=(
+            f"docker compose -f {COMPOSE_DIR}/docker-compose.yml "
+            "--project-name project_mlops --profile train run --no-deps --rm train "
+            "sh -c '"
+            "[ -f /models/best_model_prev.pt ] || (echo ERROR: best_model_prev.pt not found && exit 1) && "
+            "[ -f /models/model_args_prev.pkl ] || (echo ERROR: model_args_prev.pkl not found && exit 1) && "
+            "cp /models/best_model_prev.pt /models/best_model.pt && "
+            "cp /models/model_args_prev.pkl /models/model_args.pkl && "
+            "echo Restored model files from prev backup"
+            "'"
+        ),
+    )
+
     detect_active = PythonOperator(
         task_id="detect_current_active",
         python_callable=detect_current_active,
@@ -123,7 +138,8 @@ with DAG(
     )
 
     (
-        detect_active
+        restore_model_files
+        >> detect_active
         >> start_target
         >> check_target
         >> swap_nginx

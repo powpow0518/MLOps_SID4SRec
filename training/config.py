@@ -9,6 +9,10 @@ def get_config():
                         help='Load training data from PostgreSQL instead of pickle files')
     parser.add_argument('--db_url', type=str, default=os.environ.get('DATABASE_URL', ''),
                         help='PostgreSQL connection URL (used when --use_db is set)')
+    parser.add_argument('--snapshot_item_id', type=int, default=None,
+                        help='Max item_id to include (from training_snapshot). None = no filter.')
+    parser.add_argument('--snapshot_interaction_id', type=int, default=None,
+                        help='Max interaction_id to include (from training_snapshot). None = no filter.')
     #************SASRec*******************
     parser.add_argument('--gpu_id', type=int, default=0, help='gpu')
     parser.add_argument("--dataset", type=str, default="Beauty", choices=['Beauty', 'Sports_and_Outdoors', 'Home_and_Kitchen', 'Toys_and_Games'], help="Choose the dataset")

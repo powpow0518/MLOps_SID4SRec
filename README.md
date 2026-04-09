@@ -50,6 +50,22 @@ This system serves personalized item recommendations using **SID4SRec** — a SA
 
 ---
 
+### Screenshots
+
+**Swagger UI** — bilingual toggle (EN / 繁中)
+
+![Swagger UI](docs/screenshots/swagger.png)
+
+**Airflow DAG** — `manual_retrain` pipeline
+
+![Airflow DAG](docs/screenshots/airflow_dag.png)
+
+**Grafana Dashboard** — recommendation accuracy by category / brand / user activity
+
+![Grafana Dashboard](docs/screenshots/grafana.png)
+
+---
+
 ### Tech Stack
 
 | Component | Technology |
@@ -162,7 +178,7 @@ This is an active learning project. Current progress:
 - [x] User representation pipeline (inference-time UPSERT + post-retrain batch)
 - [x] RAG-based explanation system (`/explain`, Google Gemini API)
 - [x] Grafana analytics dashboard (recommendation accuracy, drill-down by category/brand/user activity, provisioning)
-- [ ] Full end-to-end pipeline validation
+- [x] Full end-to-end pipeline validation (manual_retrain + rollback DAG, 2026-04-09)
 
 ---
 
@@ -211,6 +227,22 @@ This is an active learning project. Current progress:
 - **Orchestration**：Apache Airflow，管理兩條 DAG
 - **Storage**：PostgreSQL 存放互動紀錄與商品中繼資料；pgvector 存放 192-dim item embedding 與 user representation
 - **Analytics**：Grafana（port 3000），直連 PostgreSQL，提供推薦準確率分析儀表板
+
+---
+
+### 截圖
+
+**Swagger UI** — 支援英中切換
+
+![Swagger UI](docs/screenshots/swagger.png)
+
+**Airflow DAG** — `manual_retrain` Pipeline
+
+![Airflow DAG](docs/screenshots/airflow_dag.png)
+
+**Grafana Dashboard** — 推薦準確率分析（依 category / brand / 用戶活躍度）
+
+![Grafana Dashboard](docs/screenshots/grafana.png)
 
 ---
 
@@ -325,4 +357,4 @@ docker compose --profile train run --no-deps --rm train python -m training.train
 - [x] User Representation Pipeline（推論時 UPSERT + 重訓後 batch 更新）
 - [x] RAG-based 推薦解釋系統（`/explain`，Google Gemini API）
 - [x] Grafana 分析儀表板（推薦準確率，依 category / brand / 用戶活躍度 drill-down，provisioning 自動載入）
-- [ ] 完整端到端 Pipeline 驗證
+- [x] 完整端到端 Pipeline 驗證（manual_retrain + rollback DAG，2026-04-09）

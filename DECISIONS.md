@@ -158,11 +158,6 @@ Client → Nginx(:80) → serve_blue  (預設 active)
 - 代價：失去「切換不用 reload」的優點，但 `nginx -s reload` 是 graceful 的（在 DAG 裡多一步 `docker exec` 而已），完全可接受。
 - 教訓：選技術時不能只看 happy path 的優雅度，要把實際運行環境（Windows + Docker Desktop）的 quirks 算進去。
 
-**目前限制（TODO）：**
-- `manual_retrain` DAG 只支援 BLUE→GREEN 單向切換（假設啟動時 active 為 BLUE）
-- 下一輪 retrain 要從 GREEN 切回 BLUE 需要偵測當前 active 並反向 swap，目前未實作
-- 短期 workaround：retrain 結束後手動把 nginx.conf 改回 `serve_blue:8000`、stop green、start blue
-
 **為什麼不需要 Graceful Draining：**
 - 此系統的所有 endpoint（`/recommend`、`/explain` 等）皆為短請求（< 1s）
 - 2s `sleep` 提供足夠的 in-flight grace period
@@ -172,13 +167,14 @@ Client → Nginx(:80) → serve_blue  (預設 active)
 - 外部統一透過 Nginx port `80` 存取
 - 舊的 `8000`（直連 serve_blue）、`8001`（直連 serve_green）、`8888`（Traefik dashboard）已全部移除
 
-### 3.5 Model 檔案命名
-**決策：** 統一使用 `best_model.pt`，retrain 前備份成 `best_model_prev.pt`。
+### 3.5 Model 檔案命名與備份
+**決策：** 統一使用 `best_model.pt` + `model_args.pkl`，retrain 前兩者同時備份（`best_model_prev.pt` + `model_args_prev.pkl`）。
 
 **原因：**
 - 統一命名讓所有 container 的 `MODEL_PATH` 環境變數不需要改動
-- 保留上一版本作為 rollback 用途
-- 避免無限累積歷史版本佔用磁碟
+- `model_args.pkl` 儲存 `item_size`、`db2train`/`train2db` 等 vocab 映射，與 `best_model.pt` 的 embedding 矩陣尺寸強耦合——兩個檔案必須來自同一次訓練，否則 serving 載入時會發生 size mismatch
+- 因此備份與還原必須成對操作，不可單獨備份其中一個
+- 避免無限累積歷史版本佔用磁碟（只保留前一版）
 
 ### 3.6 Base image 選擇
 **決策：** Train container 使用 `pytorch/pytorch:2.0.0-cuda11.7`。
@@ -317,9 +313,62 @@ docker compose -f /opt/airflow/project/docker-compose.yml \
 **原因：** Airflow container 從 `/opt/airflow/project` 執行 docker compose，project name 預設會變成 `project`（不是 `project_mlops`），導致加入錯誤的 network，連不到 postgres。
 
 ### 5.5 Model path 使用絕對路徑
-**決策：** `.env` 檔定義 `MLOPS_PROJECT_DIR=E:/demo/project_MLOps`，train service volume 使用 `${MLOPS_PROJECT_DIR}/models:/models`。
+**決策：** `.env` 檔定義 `MLOPS_PROJECT_DIR=E:/demo/project_MLOps`，**train、serve_blue、serve_green** 三個 service 的 `/models` volume mount 一律使用 `${MLOPS_PROJECT_DIR}/models:/models`（絕對路徑）。
 
-**原因：** 從 Airflow container 執行 docker compose 時，`./models` 相對路徑會被解析成 container 內的路徑，Docker daemon（在 Windows host）找不到。絕對路徑確保 Windows host 能正確 mount。
+**原因：** 從 Airflow container 執行 `docker compose up` 或 `docker compose run` 時，`./models` 相對路徑會被解析成 container 內部的路徑（`/opt/airflow/project/models`），Docker daemon（在 Windows host）無法 bind-mount 一個 container 內部路徑，結果 `/models` 掛進去是空目錄，serve 容器找不到 `model_args.pkl` 就啟動失敗。絕對路徑讓 Docker daemon 在 host 上正確 resolve。
+
+### 5.7 訓練資料來源：DB（--use_db）+ Snapshot 隔離 + ID Remap
+
+**決策：** 訓練資料從 PostgreSQL 拉取（`--use_db`），不再讀靜態 txt 檔。訓練開始時紀錄 snapshot，item_id 做連續 remap 並存入 `model_args.pkl`，供所有下游腳本共用。
+
+**Root cause（舊問題）：**
+- 舊流程：`ingest_beauty.py` 把 Amazon 資料寫入 DB → 靜態 `datasets/*.txt` → 訓練（train_id = 1-based 連續整數）→ `generate_embeddings`（用 train_id 寫 DB）→ `generate_user_representations`（讀 DB item_id，與 train_id 不符） → **IndexError / size mismatch**
+- DB item_id 和訓練 vocab 是兩套，對不上，導致 embedding 寫錯位置、serving 載入 model 時 size mismatch。
+
+**解決方案：**
+
+1. **Snapshot（`create_snapshot` DAG task）**
+   - 在訓練前記錄 `MAX(item.id)` 和 `MAX(interaction.id)`，寫入 `training_snapshot` table。
+   - 訓練、generate_embeddings、generate_user_representations 全部依照這個邊界做 vocab 凍結，ingest 進來的新資料不會污染本輪訓練。
+
+2. **Remap（`get_data_dic_from_db()` in `data_generator.py`）**
+   - 把 snapshot 內的 DB item_id（可能有空洞）排序後，remmap 成連續 1-indexed train_id：
+     - `db2train: dict[int, int]` — db_id → train_id
+     - `train2db: list[int]` — train_id → db_id（index 0 = padding）
+   - 存入 `model_args.pkl`（`train.py` 在訓練後儲存），供 generate_embeddings / generate_user_representations / serving 共用。
+
+3. **generate_embeddings**
+   - 用 `train2db[train_id]` 還原 db_id，只寫 `item` table 存在的 db_id。
+
+4. **generate_user_representations**
+   - 讀 DB 所有 user 的 interaction（snapshot 後的 item = cold item）。
+   - 用 `db2train` 把 db_id 轉成 train_id；snapshot 後的新 item 走 cold-start。
+   - 同時寫 `user_representation`（UPSERT）和 `recommendation_log`（INSERT）。
+
+5. **Cold-start 共用模組（`serving/cold_start.py`）**
+   - 原本 cold-start 邏輯散在 `serving/main.py`，現在抽成獨立模組，同時被 online serving 和 batch inference 共用。
+   - `build_cold_start_data()`：找 category+brand 最近的 in-vocab item，平均 embedding 作合成向量。
+   - `run_inference()`：完整推薦 pipeline，含 remap + cold-start + 合成 embedding 串進 scoring。
+
+**DAG task 順序（更新後）：**
+```
+create_snapshot → backup_model → run_training → generate_embeddings
+→ generate_user_representations → detect_current_active → start_target
+→ health_check_target → swap_nginx_upstream → stop_source → health_check_nginx
+→ rollback_on_failure（ONE_FAILED trigger）
+```
+
+**model_args.pkl 中的關鍵欄位：**
+| 欄位 | 型別 | 說明 |
+|------|------|------|
+| `db2train` | `dict[int, int]` | db_id → train_id |
+| `train2db` | `list[int]` | train_id → db_id（index 0 = padding） |
+| `snapshot_max_item_id` | `int` | 訓練時 MAX(item.id) |
+| `item_size` | `int` | 模型 vocab 大小（含 padding） |
+| `category_lookup` | `Tensor` | train_id → category_id |
+| `brand_lookup` | `Tensor` | train_id → brand_id |
+
+---
 
 ### 5.6 Eval 改用 per-batch topk 避免 OOM
 **決策：** `trainer.py` 的 `eval()` 改為每個 batch 直接做 `torch.topk(bs_scores, 20, dim=1)`，不再累積完整 scores matrix。
@@ -328,6 +377,16 @@ docker compose -f /opt/airflow/project/docker-compose.yml \
 - 原本做法：每個 batch 的 `(batch, num_items)` scores 全部 `append`，迴圈結束後 `torch.cat` 成 `(num_users, num_items)` 再做 `np.argpartition`。Beauty 資料集約 22,000 users × 12,000 items × 4 bytes ≈ 1GB，加上 `-scores` 拷貝和 argsort 中間結果，eval 結束瞬間峰值超過 WSL2 VM 可用 RAM（6GB），被 kernel OOM killer 砍掉（exit code 137）
 - per-batch topk 後只保留 `(num_users, 20)`，累積記憶體 ~3.5MB，問題消失
 - `get_full_sort_score` 收到的 `pred_list` 格式不變（降冪 top-20 list of lists）
+
+### 5.8 /models 目錄寫入需透過 train container
+**決策：** 任何需要**覆寫** `/models/` 目錄下既有檔案的操作（如 rollback 時還原 `best_model.pt`），必須透過 `docker compose run --rm train` 執行，不可在 Airflow container 內直接 `cp`。
+
+**原因：**
+- Train container 以 root 執行，`best_model.pt`、`model_args.pkl` 等都是 train container 寫出的 root-owned 檔案（`-rw-r--r-- root root`）
+- Airflow container 以非 root 的 `airflow` user 執行，對這些 root-owned 檔案沒有寫入權限，直接 `cp` 會得到 `Permission denied`
+- 解決方式：`BashOperator` 呼叫 `docker compose run --rm train sh -c "cp /models/best_model_prev.pt /models/best_model.pt && ..."`，讓 train container（root）做實際的 copy
+
+**適用場景：** `rollback.py` 的 `restore_model_files` task、任何需要覆寫 `/models/` 下既有 root-owned 檔案的維運操作。
 
 ---
 

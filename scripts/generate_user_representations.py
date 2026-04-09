@@ -5,6 +5,10 @@ Batch-generate user representation vectors and recommendation logs, then store i
 key: (user_id, model_version)，UPSERT 語意（retrain 後重跑會更新舊的）。
 同時將 top-k 推薦結果寫入 recommendation_log，供 /explain 使用。
 
+Cold-start: 訓練 snapshot 之後新增的 item（item_id > snapshot_max_item_id）
+透過 serving.cold_start 的 substitute_map + synthetic embeddings 處理，
+仍可出現在 top-k 結果裡。
+
 Usage:
     python -m scripts.generate_user_representations
 """
@@ -16,6 +20,7 @@ from datetime import datetime, timezone
 import psycopg2
 import torch
 
+from serving.cold_start import build_cold_start_data, run_inference
 from training.sid4srec import SID4SRec
 
 MODEL_PATH = os.getenv("MODEL_PATH", "/models/best_model.pt")
@@ -45,11 +50,13 @@ def main():
     print("Loading model...")
     model, args = load_model(device)
     max_len = args.max_seq_length
+    snapshot_max_item_id = getattr(args, 'snapshot_max_item_id', 0)
+    db2train = getattr(args, 'db2train', {})
+    print(f"Snapshot max item_id: {snapshot_max_item_id}, vocab size: {len(db2train)}")
 
     conn = psycopg2.connect(DATABASE_URL)
     try:
         with conn.cursor() as cur:
-            # 取得目前 active model version（由 generate_embeddings 設定）
             cur.execute(
                 "SELECT model_version FROM model_version WHERE is_active = TRUE LIMIT 1"
             )
@@ -59,7 +66,7 @@ def main():
             model_version = row[0]
             print(f"Model version: {model_version}")
 
-            # 取得所有 user 的互動序列（依時間排序）
+            # 所有 user 的互動序列（DB item_ids，含 cold items）
             cur.execute("""
                 SELECT user_id, array_agg(item_id ORDER BY timestamp ASC) AS item_sequence
                 FROM interaction
@@ -68,50 +75,51 @@ def main():
             users = cur.fetchall()
             print(f"Users to process: {len(users)}")
 
-        # Pre-compute items embedding matrix once
-        with torch.no_grad():
-            items_emb = model.items_emb()  # [num_items, 192]
+            # 預先取得 cold-start item rows（item_id > snapshot boundary）
+            cur.execute("""
+                SELECT item_id, category_id1, brand_id
+                FROM item
+                WHERE item_id > %s
+                ORDER BY item_id
+            """, (snapshot_max_item_id,))
+            cold_rows = cur.fetchall()
+
+        print(f"Cold-start items: {len(cold_rows)}")
+
+        # 建立 cold-start substitute map + synthetic embeddings（一次性，所有 user 共用）
+        substitute_map, cold_item_ids, cold_embeddings = build_cold_start_data(
+            cold_rows, args, model, device
+        )
 
         # Batch inference
         repr_results = []
         rec_results = []
         now = datetime.now(timezone.utc)
 
-        with torch.no_grad():
-            for i in range(0, len(users), BATCH_SIZE):
-                batch = users[i : i + BATCH_SIZE]
-                user_ids = []
-                padded_seqs = []
-                raw_seqs = []
+        for i in range(0, len(users), BATCH_SIZE):
+            batch = users[i : i + BATCH_SIZE]
 
-                for user_id, seq in batch:
-                    raw_seqs.append(seq)
-                    seq = seq[-max_len:]
-                    padded = [0] * (max_len - len(seq)) + seq
-                    user_ids.append(user_id)
-                    padded_seqs.append(padded)
+            for user_id, seq in batch:
+                if not seq:
+                    continue
 
-                input_tensor = torch.tensor(padded_seqs, dtype=torch.long).to(device)
-                repr_vectors = model.get_user_representation(input_tensor)  # [B, 192]
-                scores_batch = torch.matmul(repr_vectors, items_emb.transpose(0, 1))  # [B, num_items]
+                top_items, user_repr = run_inference(
+                    seq, args, model, device,
+                    top_k=TOP_K,
+                    substitute_map=substitute_map,
+                    cold_item_ids=cold_item_ids,
+                    cold_embeddings=cold_embeddings,
+                )
 
-                for _j, (user_id, repr_vec, scores, seq) in enumerate(
-                    zip(user_ids, repr_vectors, scores_batch, raw_seqs, strict=True)
-                ):
-                    # Mask seen items
-                    for item_id in seq:
-                        if 0 < item_id < scores.shape[0]:
-                            scores[item_id] = -1e9
+                array_literal = "{" + ",".join(str(x) for x in top_items) + "}"
+                vector_str = "[" + ",".join(f"{v:.6f}" for v in user_repr) + "]"
 
-                    top_items = torch.argsort(scores, descending=True)[:TOP_K].tolist()
-                    array_literal = "{" + ",".join(str(x) for x in top_items) + "}"
+                repr_results.append((user_id, model_version, vector_str))
+                rec_results.append((user_id, array_literal, now))
 
-                    vector_str = "[" + ",".join(str(float(v)) for v in repr_vec.cpu().numpy()) + "]"
-                    repr_results.append((user_id, model_version, vector_str))
-                    rec_results.append((user_id, array_literal, now))
-
-                if (i // BATCH_SIZE + 1) % 10 == 0:
-                    print(f"  {i + len(batch)}/{len(users)} users processed")
+            if (i // BATCH_SIZE + 1) % 10 == 0:
+                processed = min(i + BATCH_SIZE, len(users))
+                print(f"  {processed}/{len(users)} users processed")
 
         # Batch UPSERT user_representation
         with conn.cursor() as cur:
@@ -137,7 +145,10 @@ def main():
             )
 
         conn.commit()
-        print(f"Done. Stored {len(repr_results)} user representations and {len(rec_results)} recommendation logs for version '{model_version}'.")
+        print(
+            f"Done. Stored {len(repr_results)} user representations and "
+            f"{len(rec_results)} recommendation logs for version '{model_version}'."
+        )
 
     finally:
         conn.close()

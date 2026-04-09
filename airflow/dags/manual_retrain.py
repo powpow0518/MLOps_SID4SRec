@@ -17,10 +17,13 @@ Blue-Green 切換流程（Nginx 版，雙向）：
   預設 epochs=1000 / train_batch_size=256（config.py 的 Beauty 最佳值）
 """
 
+import os
 import time
 from datetime import datetime
 
+import psycopg2
 import requests
+from airflow.models.param import Param
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
@@ -44,6 +47,43 @@ def _wait_healthy(url: str, label: str, attempts: int = 15, interval: int = 5):
             print(f"[{label}] attempt {attempt}/{attempts} failed: {e}")
         time.sleep(interval)
     raise ValueError(f"[{label}] health check failed after {attempts} attempts")
+
+
+def create_training_snapshot(**context):
+    """記錄目前 item / interaction 的 max id，寫入 training_snapshot 表。
+
+    後續所有 task（train、generate_embeddings、generate_user_representations）
+    都依照這個 snapshot 做 vocab 凍結，確保 ingest 不會污染訓練期間的資料邊界。
+    """
+    db_url = os.environ["DATABASE_URL"]
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(MAX(item_id), 0) FROM item")
+            max_item_id = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(MAX(interaction_id), 0) FROM interaction")
+            max_interaction_id = cur.fetchone()[0]
+            cur.execute(
+                """
+                INSERT INTO training_snapshot (max_item_id, max_interaction_id)
+                VALUES (%s, %s) RETURNING id
+                """,
+                (max_item_id, max_interaction_id),
+            )
+            snapshot_id = cur.fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    print(
+        f"[create_snapshot] id={snapshot_id} "
+        f"max_item_id={max_item_id} max_interaction_id={max_interaction_id}"
+    )
+    return {
+        "snapshot_id": snapshot_id,
+        "max_item_id": max_item_id,
+        "max_interaction_id": max_interaction_id,
+    }
 
 
 def detect_current_active(**context):
@@ -79,26 +119,42 @@ with DAG(
     start_date=datetime(2026, 1, 1),
     catchup=False,
     tags=["retrain", "manual"],
+    params={
+        "epochs": Param(1000, type="integer", title="Epochs",
+                        description="訓練輪數（輕量驗證可填 5）"),
+        "train_batch_size": Param(256, type="integer", title="Train batch size",
+                                  description="訓練 batch size（預設 256）"),
+    },
 ) as dag:
+
+    snapshot_task = PythonOperator(
+        task_id="create_snapshot",
+        python_callable=create_training_snapshot,
+    )
 
     backup_model = BashOperator(
         task_id="backup_model",
         bash_command=(
             "[ -f /models/best_model.pt ] && "
             "cp /models/best_model.pt /models/best_model_prev.pt || "
-            "echo 'No previous model to backup'"
+            "echo 'No previous model to backup' ; "
+            "[ -f /models/model_args.pkl ] && "
+            "cp /models/model_args.pkl /models/model_args_prev.pkl || "
+            "echo 'No previous model_args to backup'"
         ),
     )
 
-    # 訓練：從 DB 拉資料（--use_db），epochs / batch_size 可由 dag_run.conf 覆蓋
+    # 訓練：從 DB 拉資料（--use_db），帶入 snapshot 邊界確保 vocab 凍結
     run_training = BashOperator(
         task_id="run_training",
         bash_command=(
             f"docker compose -f {COMPOSE_DIR}/docker-compose.yml "
             "--project-name project_mlops --profile train run --no-deps --rm train "
             "python -m training.train --use_db "
-            "--epochs {{ dag_run.conf.get('epochs', 1000) }} "
-            "--train_batch_size {{ dag_run.conf.get('train_batch_size', 256) }}"
+            "--snapshot_item_id {{ ti.xcom_pull(task_ids='create_snapshot')['max_item_id'] }} "
+            "--snapshot_interaction_id {{ ti.xcom_pull(task_ids='create_snapshot')['max_interaction_id'] }} "
+            "--epochs {{ params.epochs }} "
+            "--train_batch_size {{ params.train_batch_size }}"
         ),
     )
 
@@ -190,7 +246,8 @@ with DAG(
     )
 
     (
-        backup_model
+        snapshot_task
+        >> backup_model
         >> run_training
         >> generate_embeddings
         >> generate_user_representations

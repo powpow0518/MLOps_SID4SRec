@@ -105,6 +105,16 @@ CREATE SEQUENCE IF NOT EXISTS category_id_seq;
 CREATE SEQUENCE IF NOT EXISTS brand_id_seq;
 CREATE SEQUENCE IF NOT EXISTS item_id_seq;
 
+-- ── Training snapshot ────────────────────────────────────────────────────────
+-- 每次 retrain DAG 開始時記錄 item/interaction 的上界，確保訓練與推論用同一份 vocab
+
+CREATE TABLE IF NOT EXISTS training_snapshot (
+    id                  SERIAL  PRIMARY KEY,
+    created_at          TIMESTAMP NOT NULL DEFAULT NOW(),
+    max_item_id         INTEGER NOT NULL,
+    max_interaction_id  INTEGER NOT NULL
+);
+
 -- ── Indexes ───────────────────────────────────────────────────────────────────
 
 CREATE INDEX IF NOT EXISTS idx_interaction_user_id  ON interaction(user_id);

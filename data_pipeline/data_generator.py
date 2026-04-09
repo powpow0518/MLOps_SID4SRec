@@ -37,43 +37,88 @@ class DataGenerator(object):
         return valid_rating_matrix, test_rating_matrix
 
     def get_data_dic_from_db(self, db_url):
-        """Build data_dic directly from PostgreSQL (interaction + item + category + brand)."""
+        """Build data_dic directly from PostgreSQL (interaction + item + category + brand).
+
+        Snapshot isolation: if args.snapshot_item_id / snapshot_interaction_id are set,
+        only items and interactions up to those IDs are used. This ensures training vocab
+        and inference vocab are identical for a given model version.
+
+        Remap: DB item_ids are remapped to consecutive train_ids (1-indexed) to eliminate
+        gaps from sequence drift. Mappings are stored in the returned dict and later saved
+        to model_args.pkl for use by inference scripts and serving.
+        """
         import psycopg2
 
         if not db_url:
             raise ValueError("--use_db is set but --db_url (or DATABASE_URL env) is empty")
 
+        snapshot_item_id = getattr(self.args, 'snapshot_item_id', None)
+        snapshot_interaction_id = getattr(self.args, 'snapshot_interaction_id', None)
+
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
 
-        # 1. user sequences: sorted by (user_id, timestamp)
-        cur.execute("""
-            SELECT user_id, item_id
-            FROM interaction
-            ORDER BY user_id, timestamp
-        """)
+        # 1. item features — filtered by snapshot
+        if snapshot_item_id is not None:
+            cur.execute("""
+                SELECT item_id,
+                       COALESCE(price, 0.0),
+                       COALESCE(category_id1, 0),
+                       COALESCE(category_id2, 0),
+                       COALESCE(brand_id, 0)
+                FROM item
+                WHERE item_id <= %s
+                ORDER BY item_id
+            """, (snapshot_item_id,))
+        else:
+            cur.execute("""
+                SELECT item_id,
+                       COALESCE(price, 0.0),
+                       COALESCE(category_id1, 0),
+                       COALESCE(category_id2, 0),
+                       COALESCE(brand_id, 0)
+                FROM item
+                ORDER BY item_id
+            """)
+        item_rows = cur.fetchall()
+
+        # Build remap: sorted DB item_ids → consecutive train_ids (1-indexed; 0 = padding)
+        sorted_db_ids = [row[0] for row in item_rows]
+        db2train = {db_id: train_id for train_id, db_id in enumerate(sorted_db_ids, start=1)}
+        train2db = [0] + sorted_db_ids  # train2db[train_id] = db_id; train2db[0] = 0 (padding)
+        n_items = len(sorted_db_ids) + 1  # 0=padding, 1..N=items
+
+        # 2. user sequences — filtered by snapshot, remapped to train_ids
+        if snapshot_item_id is not None and snapshot_interaction_id is not None:
+            cur.execute("""
+                SELECT user_id, item_id
+                FROM interaction
+                WHERE item_id <= %s AND interaction_id <= %s
+                ORDER BY user_id, timestamp
+            """, (snapshot_item_id, snapshot_interaction_id))
+        elif snapshot_item_id is not None:
+            cur.execute("""
+                SELECT user_id, item_id
+                FROM interaction
+                WHERE item_id <= %s
+                ORDER BY user_id, timestamp
+            """, (snapshot_item_id,))
+        else:
+            cur.execute("""
+                SELECT user_id, item_id
+                FROM interaction
+                ORDER BY user_id, timestamp
+            """)
+
         user_items = defaultdict(list)
         for uid, iid in cur.fetchall():
-            user_items[uid].append(iid)
+            train_id = db2train.get(iid)
+            if train_id:
+                user_items[uid].append(train_id)
 
-        # filter users with too few interactions (same convention as pickle path)
         filter_num = getattr(self.args, 'filter_num', 5)
         user_seq = [items for items in user_items.values() if len(items) >= filter_num]
         n_users = len(user_seq)
-
-        # 2. item features
-        cur.execute("""
-            SELECT item_id,
-                   COALESCE(price, 0.0),
-                   COALESCE(category_id1, 0),
-                   COALESCE(category_id2, 0),
-                   COALESCE(brand_id, 0)
-            FROM item
-            ORDER BY item_id
-        """)
-        item_rows = cur.fetchall()
-        max_item_id = max((row[0] for row in item_rows), default=0)
-        n_items = max_item_id + 2  # 0 = padding, mirrors pickle convention (+2)
 
         # 3. vocab sizes
         cur.execute("SELECT COALESCE(MAX(category_id), 0) FROM category")
@@ -83,14 +128,13 @@ class DataGenerator(object):
 
         conn.close()
 
-        # 4. build items_feat matrix: shape (n_items, 4) = [price, cat1, cat2, brand]
-        #    matches get_feats_vec expectations: feats[:, 1:-1] = cats, feats[:, -1] = brand
+        # 4. build items_feat matrix: shape (n_items, 4) indexed by train_id
+        #    [price, cat1, cat2, brand] — matches get_feats_vec expectations
         items_feat = np.zeros((n_items, 4), dtype=np.float32)
-        for item_id, price, cat1, cat2, brand in item_rows:
-            if 0 < item_id < n_items:
-                items_feat[item_id] = [float(price), float(cat1), float(cat2), float(brand)]
+        for db_id, price, cat1, cat2, brand in item_rows:
+            train_id = db2train[db_id]
+            items_feat[train_id] = [float(price), float(cat1), float(cat2), float(brand)]
 
-        # feature_size follows the same pattern as the pickle path (kept for arg compatibility)
         feature_size = 2 + 1 + n_categories + n_brands - 2
 
         return {
@@ -104,6 +148,9 @@ class DataGenerator(object):
             'n_categories': n_categories,
             'n_brands': n_brands,
             'feature_size': feature_size,
+            'db2train': db2train,
+            'train2db': train2db,
+            'snapshot_max_item_id': snapshot_item_id if snapshot_item_id is not None else (sorted_db_ids[-1] if sorted_db_ids else 0),
         }
 
     def get_data_dic(self, data_file):
@@ -192,8 +239,15 @@ class DataGenerator(object):
         if getattr(self.args, 'use_db', False):
             print("========dataset: PostgreSQL (via --use_db)===========")
             data_dic = self.get_data_dic_from_db(self.args.db_url)
+            # Store remap mappings so they get saved to model_args.pkl
+            self.args.db2train = data_dic.get('db2train', {})
+            self.args.train2db = data_dic.get('train2db', [0])
+            self.args.snapshot_max_item_id = data_dic.get('snapshot_max_item_id', 0)
         else:
             data_dic = self.get_data_dic(self.data_file)
+            self.args.db2train = {}
+            self.args.train2db = []
+            self.args.snapshot_max_item_id = 0
         self.item_size = data_dic['n_items'] + 1
         self.args.feature_size = data_dic['feature_size']
         self.args.n_categories = data_dic['n_categories']

@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements-train.txt
 COPY training/    ./training/
 COPY data_pipeline/ ./data_pipeline/
 COPY scripts/     ./scripts/
+COPY serving/     ./serving/
 
 # Data & model output are mounted via Docker volume at runtime:
 #   data/   → /app/data

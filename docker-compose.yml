@@ -56,7 +56,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       GEMINI_MODEL: ${GEMINI_MODEL:-models/gemini-2.5-flash}
     volumes:
-      - ./models:/models
+      - ${MLOPS_PROJECT_DIR}/models:/models
     networks:
       - mlops_net
     depends_on:
@@ -76,7 +76,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       GEMINI_MODEL: ${GEMINI_MODEL:-models/gemini-2.5-flash}
     volumes:
-      - ./models:/models
+      - ${MLOPS_PROJECT_DIR}/models:/models
     networks:
       - mlops_net
     depends_on:
@@ -125,6 +125,7 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-mlops}:${POSTGRES_PASSWORD:-mlops}@postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mlops}:${POSTGRES_PASSWORD:-mlops}@postgres:5432/${POSTGRES_DB:-mlops}
       MLOPS_PROJECT_DIR: ${MLOPS_PROJECT_DIR}
     volumes:
       - ./airflow/dags:/opt/airflow/dags

@@ -52,7 +52,7 @@ def generate_embeddings(model):
     return embeddings.cpu().numpy()
 
 
-def store_embeddings(embeddings, model_version: str):
+def store_embeddings(embeddings, model_version: str, args=None):
     """Insert embeddings into item_embedding table, replacing old version."""
     conn = psycopg2.connect(DATABASE_URL)
     try:
@@ -67,15 +67,21 @@ def store_embeddings(embeddings, model_version: str):
                 (model_version,),
             )
 
-            # 只存 DB 裡實際存在的 item_id（避免 FK 違反）
+            # train2db[train_id] = db_id；用 remap 把 train_id 還原成 DB item_id
+            train2db = getattr(args, 'train2db', []) if args else []
             cur.execute("SELECT item_id FROM item")
             valid_item_ids = {row[0] for row in cur.fetchall()}
 
-            batch = [
-                (int(item_id), model_version, embedding.tolist())
-                for item_id, embedding in enumerate(embeddings)
-                if item_id > 0 and item_id in valid_item_ids
-            ]
+            batch = []
+            for train_id, embedding in enumerate(embeddings):
+                if train_id == 0:
+                    continue  # skip padding
+                if train2db:
+                    db_id = train2db[train_id] if train_id < len(train2db) else None
+                else:
+                    db_id = train_id  # fallback: no remap (old model_args.pkl)
+                if db_id and db_id in valid_item_ids:
+                    batch.append((int(db_id), model_version, embedding.tolist()))
 
             cur.executemany(
                 """
@@ -107,14 +113,14 @@ def main():
     print(f"Device: {device}")
 
     print("Loading model...")
-    model, _ = load_model(device)
+    model, model_args = load_model(device)
 
     print("Generating embeddings...")
     embeddings = generate_embeddings(model)
     print(f"Embedding shape: {embeddings.shape}")
 
     print("Storing embeddings in DB...")
-    store_embeddings(embeddings, model_version)
+    store_embeddings(embeddings, model_version, args=model_args)
     print("Done.")
 
 
