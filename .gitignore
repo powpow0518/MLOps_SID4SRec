@@ -8,6 +8,12 @@
 
 # Misc
 bash.exe.stackdump
+*.stackdump
+
+# Cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Python
 __pycache__/
