@@ -5,7 +5,6 @@ fastapi
 uvicorn[standard]
 psycopg2-binary       # PostgreSQL connection
 sqlalchemy            # DB ORM
-pgvector              # pgvector Python client
 scipy                 # required by training.utils (sparse matrix)
 google-generativeai   # Gemini API client (RAG explanation)
 tenacity              # retry decorator for Gemini API
